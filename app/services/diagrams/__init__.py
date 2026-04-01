@@ -1,0 +1,1 @@
+"""Diagram generation services package."""

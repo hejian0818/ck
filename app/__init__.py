@@ -1,0 +1,1 @@
+"""CodeWiki application package."""

@@ -1,0 +1,34 @@
+"""Application configuration."""
+
+from functools import lru_cache
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """Environment-backed settings."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    DATABASE_URL: str = Field(default="postgresql://localhost/codewiki")
+    VECTOR_DIMENSION: int = Field(default=768)
+    LOG_LEVEL: str = Field(default="INFO")
+    LOG_FORMAT: str = Field(default="json")
+    LLM_API_BASE: str = Field(default="http://localhost:11434/v1")
+    LLM_API_KEY: str = Field(default="dummy")
+    LLM_MODEL: str = Field(default="qwen2.5-coder:7b")
+
+
+@lru_cache
+def get_settings() -> Settings:
+    """Return a cached settings instance."""
+
+    return Settings()
+
+
+settings = get_settings()

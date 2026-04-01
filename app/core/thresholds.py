@@ -1,0 +1,9 @@
+"""Centralized thresholds for retrieval and QA decisions."""
+
+ANCHOR_CONFIDENCE_STRONG: float = 0.80
+ANCHOR_CONFIDENCE_WEAK: float = 0.60
+RETRIEVAL_CONCENTRATION: float = 0.55
+EVIDENCE_SUFFICIENT: float = 0.60
+EVIDENCE_ENHANCEMENT: float = 0.40
+EXPANSION_GAIN: float = 0.35
+RESULT_CONSISTENCY: float = 0.55
