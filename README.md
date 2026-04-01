@@ -1,6 +1,6 @@
-# CodeWiki
+# CK
 
-CodeWiki 是一个单代码仓设计文档生成与代码问答系统。Phase 1 目标是跑通 `cleanarch -> graphcode.json -> 索引 -> QA` 的最小闭环。
+CK 是一个单代码仓设计文档生成与代码问答系统。Phase 1 目标是跑通 `cleanarch -> graphcode.json -> 索引 -> QA` 的最小闭环。
 
 ## Features
 
