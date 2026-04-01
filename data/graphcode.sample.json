@@ -1,0 +1,55 @@
+{
+  "repo_meta": {
+    "repo_id": "repo_sample",
+    "repo_path": "data/test_repo",
+    "branch": "main",
+    "commit_hash": "sample",
+    "scan_time": "2026-04-02T00:00:00Z"
+  },
+  "modules": [
+    {
+      "id": "M_app_core",
+      "name": "app_core",
+      "path": "app_core",
+      "metadata": {}
+    }
+  ],
+  "files": [
+    {
+      "id": "F_utils_sample",
+      "name": "utils.py",
+      "path": "app_core/utils.py",
+      "module_id": "M_app_core",
+      "language": "python",
+      "start_line": 1,
+      "end_line": 8
+    }
+  ],
+  "symbols": [
+    {
+      "id": "S_app_core.build_message_sample",
+      "name": "build_message",
+      "qualified_name": "build_message",
+      "type": "function",
+      "signature": "build_message(name)",
+      "file_id": "F_utils_sample",
+      "module_id": "M_app_core",
+      "start_line": 7,
+      "end_line": 8,
+      "visibility": "public",
+      "doc": ""
+    }
+  ],
+  "relations": [],
+  "spans": [
+    {
+      "file_path": "app_core/utils.py",
+      "line_start": 7,
+      "line_end": 8,
+      "module_id": "M_app_core",
+      "file_id": "F_utils_sample",
+      "symbol_id": "S_app_core.build_message_sample",
+      "node_type": "symbol"
+    }
+  ]
+}
