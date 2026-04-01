@@ -15,7 +15,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    DATABASE_URL: str = Field(default="postgresql://localhost/codewiki")
+    DATABASE_URL: str = Field(default="postgresql://localhost/ck")
     VECTOR_DIMENSION: int = Field(default=768)
     LOG_LEVEL: str = Field(default="INFO")
     LOG_FORMAT: str = Field(default="json")

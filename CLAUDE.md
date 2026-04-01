@@ -108,7 +108,7 @@ from app.models.graph_objects import Module
 
 ## Project Structure
 ```
-codewiki/
+ck/
   app/
     api/          # FastAPI endpoints
     core/         # Config, logging, constants, thresholds

@@ -38,7 +38,7 @@ cp .env.example .env
 `.env` 示例：
 
 ```env
-DATABASE_URL=postgresql://localhost/codewiki
+DATABASE_URL=postgresql://localhost/ck
 VECTOR_DIMENSION=768
 LOG_LEVEL=INFO
 LOG_FORMAT=json

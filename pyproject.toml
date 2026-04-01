@@ -1,5 +1,5 @@
 [project]
-name = "codewiki"
+name = "ck"
 version = "0.1.0"
 description = "Single-repository design document generation and code QA system."
 readme = "README.md"

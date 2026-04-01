@@ -653,16 +653,16 @@ brew install postgresql@16
 brew services start postgresql@16
 
 # 创建数据库
-createdb codewiki
+createdb ck
 
 # 安装 pgvector 扩展
-psql codewiki -c "CREATE EXTENSION vector;"
+psql ck -c "CREATE EXTENSION vector;"
 ```
 
 ### Environment Variables
 创建 `.env` 文件：
 ```
-DATABASE_URL=postgresql://localhost/codewiki
+DATABASE_URL=postgresql://localhost/ck
 LLM_API_BASE=http://localhost:11434/v1  # Ollama example
 LLM_API_KEY=dummy
 LLM_MODEL=qwen2.5-coder:7b
