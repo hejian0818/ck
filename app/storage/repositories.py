@@ -24,6 +24,15 @@ class GraphRepository:
                 sql = statement.strip()
                 if sql:
                     connection.execute(text(sql))
+            self._ensure_summary_columns(connection)
+
+    def init_vector_tables(self) -> None:
+        statements = self._load_vector_schema_statements()
+        with self.engine.begin() as connection:
+            for statement in statements.split(";"):
+                sql = statement.strip()
+                if sql:
+                    connection.execute(text(sql))
 
     def save_graphcode(self, graphcode: GraphCode) -> None:
         repo_id = graphcode.repo_meta.repo_id
@@ -51,6 +60,7 @@ class GraphRepository:
                         "repo_id": repo_id,
                         "name": module.name,
                         "path": module.path,
+                        "summary": module.summary,
                         "metadata": json.dumps(module.metadata),
                     },
                 )
@@ -59,12 +69,17 @@ class GraphRepository:
                 connection.execute(
                     text(
                         """
-                        INSERT INTO files (id, repo_id, module_id, name, path, language, start_line, end_line)
-                        VALUES (:id, :repo_id, :module_id, :name, :path, :language, :start_line, :end_line)
+                        INSERT INTO files (
+                            id, repo_id, module_id, name, path, summary, language, start_line, end_line
+                        )
+                        VALUES (
+                            :id, :repo_id, :module_id, :name, :path, :summary, :language, :start_line, :end_line
+                        )
                         ON CONFLICT (id) DO UPDATE SET
                             module_id = EXCLUDED.module_id,
                             name = EXCLUDED.name,
                             path = EXCLUDED.path,
+                            summary = EXCLUDED.summary,
                             language = EXCLUDED.language,
                             start_line = EXCLUDED.start_line,
                             end_line = EXCLUDED.end_line
@@ -79,11 +94,11 @@ class GraphRepository:
                         """
                         INSERT INTO symbols (
                             id, repo_id, file_id, module_id, name, qualified_name, type,
-                            signature, start_line, end_line, visibility, doc
+                            signature, summary, start_line, end_line, visibility, doc
                         )
                         VALUES (
                             :id, :repo_id, :file_id, :module_id, :name, :qualified_name, :type,
-                            :signature, :start_line, :end_line, :visibility, :doc
+                            :signature, :summary, :start_line, :end_line, :visibility, :doc
                         )
                         ON CONFLICT (id) DO UPDATE SET
                             file_id = EXCLUDED.file_id,
@@ -92,6 +107,7 @@ class GraphRepository:
                             qualified_name = EXCLUDED.qualified_name,
                             type = EXCLUDED.type,
                             signature = EXCLUDED.signature,
+                            summary = EXCLUDED.summary,
                             start_line = EXCLUDED.start_line,
                             end_line = EXCLUDED.end_line,
                             visibility = EXCLUDED.visibility,
@@ -107,11 +123,11 @@ class GraphRepository:
                         """
                         INSERT INTO relations (
                             id, repo_id, relation_type, source_id, target_id, source_type,
-                            target_type, source_module_id, target_module_id
+                            target_type, source_module_id, target_module_id, summary
                         )
                         VALUES (
                             :id, :repo_id, :relation_type, :source_id, :target_id, :source_type,
-                            :target_type, :source_module_id, :target_module_id
+                            :target_type, :source_module_id, :target_module_id, :summary
                         )
                         ON CONFLICT (id) DO UPDATE SET
                             relation_type = EXCLUDED.relation_type,
@@ -120,7 +136,8 @@ class GraphRepository:
                             source_type = EXCLUDED.source_type,
                             target_type = EXCLUDED.target_type,
                             source_module_id = EXCLUDED.source_module_id,
-                            target_module_id = EXCLUDED.target_module_id
+                            target_module_id = EXCLUDED.target_module_id,
+                            summary = EXCLUDED.summary
                         """
                     ),
                     {"repo_id": repo_id, **relation.model_dump()},
@@ -139,18 +156,21 @@ class GraphRepository:
                 )
 
     def get_module_by_id(self, module_id: str) -> Module | None:
-        row = self._fetch_one("SELECT id, name, path, metadata FROM modules WHERE id = :id", {"id": module_id})
+        row = self._fetch_one(
+            "SELECT id, name, path, summary, metadata FROM modules WHERE id = :id",
+            {"id": module_id},
+        )
         if not row:
             return None
         metadata = row.metadata or {}
         if isinstance(metadata, str):
             metadata = json.loads(metadata)
-        return Module(id=row.id, name=row.name, path=row.path, metadata=metadata)
+        return Module(id=row.id, name=row.name, path=row.path, summary=row.summary, metadata=metadata)
 
     def get_file_by_id(self, file_id: str) -> File | None:
         row = self._fetch_one(
             """
-            SELECT id, name, path, module_id, language, start_line, end_line
+            SELECT id, name, path, module_id, summary, language, start_line, end_line
             FROM files WHERE id = :id
             """,
             {"id": file_id},
@@ -163,7 +183,7 @@ class GraphRepository:
         row = self._fetch_one(
             """
             SELECT id, name, qualified_name, type, signature, file_id, module_id,
-                   start_line, end_line, visibility, doc
+                   summary, start_line, end_line, visibility, doc
             FROM symbols WHERE id = :id
             """,
             {"id": symbol_id},
@@ -176,7 +196,7 @@ class GraphRepository:
         rows = self._fetch_all(
             """
             SELECT id, relation_type, source_id, target_id, source_type, target_type,
-                   source_module_id, target_module_id
+                   source_module_id, target_module_id, summary
             FROM relations WHERE source_id = :source_id
             """,
             {"source_id": source_id},
@@ -187,7 +207,7 @@ class GraphRepository:
         rows = self._fetch_all(
             """
             SELECT id, relation_type, source_id, target_id, source_type, target_type,
-                   source_module_id, target_module_id
+                   source_module_id, target_module_id, summary
             FROM relations WHERE target_id = :target_id
             """,
             {"target_id": target_id},
@@ -211,7 +231,7 @@ class GraphRepository:
     def list_files_by_module(self, module_id: str) -> list[File]:
         rows = self._fetch_all(
             """
-            SELECT id, name, path, module_id, language, start_line, end_line
+            SELECT id, name, path, module_id, summary, language, start_line, end_line
             FROM files WHERE module_id = :module_id
             """,
             {"module_id": module_id},
@@ -222,12 +242,25 @@ class GraphRepository:
         rows = self._fetch_all(
             """
             SELECT id, name, qualified_name, type, signature, file_id, module_id,
-                   start_line, end_line, visibility, doc
+                   summary, start_line, end_line, visibility, doc
             FROM symbols WHERE file_id = :file_id
             """,
             {"file_id": file_id},
         )
         return [Symbol(**row._mapping) for row in rows]
+
+    def get_summary(self, object_type: str, object_id: str) -> str | None:
+        table_name = self._resolve_summary_table(object_type)
+        row = self._fetch_one(f"SELECT summary FROM {table_name} WHERE id = :id", {"id": object_id})
+        return row.summary if row else None
+
+    def update_summary(self, object_type: str, object_id: str, summary: str) -> None:
+        table_name = self._resolve_summary_table(object_type)
+        with self.engine.begin() as connection:
+            connection.execute(
+                text(f"UPDATE {table_name} SET summary = :summary WHERE id = :id"),
+                {"id": object_id, "summary": summary},
+            )
 
     def get_repo_path(self, repo_id: str) -> str | None:
         row = self._fetch_one("SELECT repo_path FROM repos WHERE repo_id = :repo_id", {"repo_id": repo_id})
@@ -256,6 +289,7 @@ class GraphRepository:
                 repo_id TEXT NOT NULL,
                 name TEXT NOT NULL,
                 path TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
                 metadata TEXT NOT NULL DEFAULT '{}'
             );
             CREATE TABLE IF NOT EXISTS files (
@@ -264,6 +298,7 @@ class GraphRepository:
                 module_id TEXT NOT NULL,
                 name TEXT NOT NULL,
                 path TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
                 language TEXT NOT NULL,
                 start_line INTEGER NOT NULL,
                 end_line INTEGER NOT NULL
@@ -277,6 +312,7 @@ class GraphRepository:
                 qualified_name TEXT NOT NULL,
                 type TEXT NOT NULL,
                 signature TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
                 start_line INTEGER NOT NULL,
                 end_line INTEGER NOT NULL,
                 visibility TEXT NOT NULL,
@@ -291,7 +327,8 @@ class GraphRepository:
                 source_type TEXT NOT NULL,
                 target_type TEXT NOT NULL,
                 source_module_id TEXT NOT NULL,
-                target_module_id TEXT NOT NULL
+                target_module_id TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS spans (
                 repo_id TEXT NOT NULL,
@@ -307,21 +344,78 @@ class GraphRepository:
         schema_path = Path(__file__).with_name("schema.sql")
         return schema_path.read_text(encoding="utf-8")
 
+    def _load_vector_schema_statements(self) -> str:
+        if self.engine.dialect.name == "sqlite":
+            return """
+            CREATE TABLE IF NOT EXISTS embeddings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                repo_id TEXT NOT NULL,
+                object_id TEXT NOT NULL,
+                object_type TEXT NOT NULL,
+                embedding TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(repo_id, object_id)
+            );
+            CREATE INDEX IF NOT EXISTS embeddings_repo_type_idx ON embeddings(repo_id, object_type);
+            """
+        schema_path = Path(__file__).with_name("schema_vector.sql")
+        return schema_path.read_text(encoding="utf-8")
+
     def _module_upsert_sql(self) -> str:
         if self.engine.dialect.name == "sqlite":
             return """
-                INSERT INTO modules (id, repo_id, name, path, metadata)
-                VALUES (:id, :repo_id, :name, :path, :metadata)
+                INSERT INTO modules (id, repo_id, name, path, summary, metadata)
+                VALUES (:id, :repo_id, :name, :path, :summary, :metadata)
                 ON CONFLICT (id) DO UPDATE SET
                     name = EXCLUDED.name,
                     path = EXCLUDED.path,
+                    summary = EXCLUDED.summary,
                     metadata = EXCLUDED.metadata
             """
         return """
-            INSERT INTO modules (id, repo_id, name, path, metadata)
-            VALUES (:id, :repo_id, :name, :path, CAST(:metadata AS JSONB))
+            INSERT INTO modules (id, repo_id, name, path, summary, metadata)
+            VALUES (:id, :repo_id, :name, :path, :summary, CAST(:metadata AS JSONB))
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 path = EXCLUDED.path,
+                summary = EXCLUDED.summary,
                 metadata = EXCLUDED.metadata
         """
+
+    def _ensure_summary_columns(self, connection) -> None:
+        for table_name in ("modules", "files", "symbols", "relations"):
+            columns = self._list_columns(connection, table_name)
+            if "summary" not in columns:
+                connection.execute(
+                    text(f"ALTER TABLE {table_name} ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
+                )
+
+    def _list_columns(self, connection, table_name: str) -> set[str]:
+        if self.engine.dialect.name == "sqlite":
+            rows = connection.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+            return {row[1] for row in rows}
+
+        rows = connection.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = :table_name
+                """
+            ),
+            {"table_name": table_name},
+        ).fetchall()
+        return {row[0] for row in rows}
+
+    @staticmethod
+    def _resolve_summary_table(object_type: str) -> str:
+        table_map = {
+            "module": "modules",
+            "file": "files",
+            "symbol": "symbols",
+            "relation": "relations",
+        }
+        try:
+            return table_map[object_type]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported summary object type: {object_type}") from exc

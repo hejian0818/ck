@@ -11,6 +11,7 @@ from app.core.logging import get_logger
 from app.models.graph_objects import File, GraphCode, Module, Relation, RepoMeta, Span, Symbol
 from app.services.cleanarch.parser_factory import ParserFactory
 from app.services.cleanarch.scanner import RepoScanner
+from app.services.indexing.summary_builder import SummaryGenerationService
 
 logger = get_logger(__name__)
 
@@ -22,9 +23,11 @@ class GraphBuilder:
         self,
         scanner: RepoScanner | None = None,
         parser_factory: ParserFactory | None = None,
+        summary_service: SummaryGenerationService | None = None,
     ) -> None:
         self.scanner = scanner or RepoScanner()
         self.parser_factory = parser_factory or ParserFactory()
+        self.summary_service = summary_service or SummaryGenerationService()
 
     def build_graph(self, repo_path: str, branch: str = "main") -> GraphCode:
         """Build a graph representation from a repository."""
@@ -139,7 +142,7 @@ class GraphBuilder:
             commit_hash=self._get_commit_hash(root),
             scan_time=datetime.now(timezone.utc),
         )
-        return GraphCode(
+        graph = GraphCode(
             repo_meta=repo_meta,
             modules=sorted(module_map.values(), key=lambda item: item.name),
             files=files,
@@ -147,6 +150,19 @@ class GraphBuilder:
             relations=relations,
             spans=spans,
         )
+        logger.info(
+            "graph_build_completed",
+            extra={
+                "context": {
+                    "repo_path": str(root),
+                    "modules": len(graph.modules),
+                    "files": len(graph.files),
+                    "symbols": len(graph.symbols),
+                    "relations": len(graph.relations),
+                }
+            },
+        )
+        return self.summary_service.enrich_graph(graph)
 
     @staticmethod
     def _infer_module(relative_path: str, repo_name: str) -> tuple[str, str]:
@@ -157,7 +173,8 @@ class GraphBuilder:
 
     @staticmethod
     def _count_lines(path: Path) -> int:
-        return max(1, sum(1 for _ in path.open("r", encoding="utf-8")))
+        with path.open("r", encoding="utf-8") as handle:
+            return max(1, sum(1 for _ in handle))
 
     @staticmethod
     def _build_repo_id(repo_path: str) -> str:

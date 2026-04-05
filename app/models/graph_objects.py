@@ -28,6 +28,7 @@ class Module(BaseModel):
     id: str
     name: str
     path: str
+    summary: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -40,6 +41,7 @@ class File(BaseModel):
     name: str
     path: str
     module_id: str
+    summary: str = ""
     language: str
     start_line: int
     end_line: int
@@ -57,6 +59,7 @@ class Symbol(BaseModel):
     signature: str
     file_id: str
     module_id: str
+    summary: str = ""
     start_line: int
     end_line: int
     visibility: str
@@ -76,6 +79,7 @@ class Relation(BaseModel):
     target_type: str
     source_module_id: str
     target_module_id: str
+    summary: str = ""
 
 
 class Span(BaseModel):

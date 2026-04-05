@@ -64,6 +64,16 @@ class RepoBuildResponse(BaseModel):
     status: Literal["success"]
 
 
+class SummaryResponse(BaseModel):
+    """Response model for summary lookup."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    object_type: Literal["module", "file", "symbol", "relation"]
+    object_id: str
+    summary: str
+
+
 class QAAskRequest(BaseModel):
     """Request model for QA endpoint."""
 
