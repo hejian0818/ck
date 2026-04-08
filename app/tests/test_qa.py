@@ -122,6 +122,44 @@ class QAAgentTests(unittest.TestCase):
         self.assertEqual(response.anchor.level, "symbol")
         self.assertIn("S_app_core.GreetingService.greet", response.used_objects)
         self.assertFalse(response.need_more_context)
+        self.assertEqual(response.strategy_used, "S1")
+        self.assertFalse(response.degraded)
+        self.assertGreaterEqual(response.metrics.A, 0.8)
+
+    def test_answer_degrades_without_anchor_and_inherits_memory_on_follow_up(self) -> None:
+        memory_manager = MemoryManager()
+        agent = QAAgent(repository=_RepoStub(), memory_manager=memory_manager, llm_client=_LLMStub())
+
+        first_response = agent.answer(
+            repo_id="repo_sample",
+            question="这个方法做什么？",
+            selection=CodeSelection(
+                file_path="data/test_repo/app_core/services.py",
+                line_start=6,
+                line_end=7,
+            ),
+            session_id="session-2",
+        )
+        follow_up_response = agent.answer(
+            repo_id="repo_sample",
+            question="它会调用谁？",
+            selection=None,
+            session_id="session-2",
+        )
+        degraded_response = agent.answer(
+            repo_id="repo_sample",
+            question="帮我分析一下",
+            selection=None,
+            session_id="session-3",
+        )
+
+        self.assertEqual(first_response.anchor.level, "symbol")
+        self.assertEqual(follow_up_response.anchor.source, "memory_inherit")
+        self.assertFalse(follow_up_response.degraded)
+        self.assertTrue(degraded_response.degraded)
+        self.assertEqual(degraded_response.strategy_used, "S4")
+        self.assertTrue(degraded_response.need_more_context)
+        self.assertTrue(degraded_response.suggestions)
 
 
 if __name__ == "__main__":

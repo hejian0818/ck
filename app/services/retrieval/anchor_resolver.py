@@ -22,8 +22,15 @@ class AnchorResolver:
         memory: AnchorMemory,
     ) -> Anchor:
         _ = question
-        _ = memory
         if not selection:
+            if memory.current_anchor is not None:
+                inherited_anchor = memory.current_anchor.model_copy(deep=True)
+                inherited_anchor.source = "memory_inherit"
+                inherited_anchor.confidence = max(
+                    inherited_anchor.confidence,
+                    ANCHOR_CONFIDENCE_WEAK,
+                )
+                return inherited_anchor
             return Anchor(level="none", source="none", confidence=0.0)
 
         matches = self.repository.find_span(

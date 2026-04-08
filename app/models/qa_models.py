@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.anchor import Anchor
 from app.models.graph_objects import File, Module, Relation, Symbol
+from app.services.agents.metrics import Metrics
 
 
 class CodeSelection(BaseModel):
@@ -32,6 +33,7 @@ class RetrievalResult(BaseModel):
     current_object: GraphObject | None = None
     related_objects: list[GraphObject] = Field(default_factory=list)
     relations: list[Relation] = Field(default_factory=list)
+    object_scores: dict[str, float] = Field(default_factory=dict)
 
 
 class QAResponse(BaseModel):
@@ -44,6 +46,10 @@ class QAResponse(BaseModel):
     confidence: float
     used_objects: list[str] = Field(default_factory=list)
     need_more_context: bool
+    strategy_used: str = "S4"
+    metrics: Metrics = Field(default_factory=Metrics)
+    degraded: bool = False
+    suggestions: list[str] = Field(default_factory=list)
 
 
 class RepoBuildRequest(BaseModel):
