@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = Field(default="BAAI/bge-base-en-v1.5")
     EMBEDDING_BATCH_SIZE: int = Field(default=32)
     EMBEDDING_OPENAI_MODEL: str = Field(default="text-embedding-3-small")
+    EMBEDDING_OPENAI_BASE_URL: str | None = Field(default=None)
+    EMBEDDING_OPENAI_API_KEY: str | None = Field(default=None)
     VECTOR_TOP_K_MODULES: int = Field(default=5)
     VECTOR_TOP_K_FILES: int = Field(default=10)
     VECTOR_TOP_K_SYMBOLS: int = Field(default=20)

@@ -5,8 +5,11 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from app.api.dependencies import get_graph_repository
+from app.core.config import settings
 from app.models.qa_models import RepoBuildRequest, RepoBuildResponse, SummaryResponse
 from app.services.cleanarch.graph_builder import GraphBuilder
+from app.services.indexing.embedding_builder import EmbeddingBuilder
+from app.storage.vector_store import VectorStore
 
 router = APIRouter(prefix="/repo", tags=["repo"])
 
@@ -16,9 +19,17 @@ def build_index(request: RepoBuildRequest) -> RepoBuildResponse:
     """Build and persist a repository index."""
 
     try:
-        graph = GraphBuilder().build_graph(repo_path=request.repo_path, branch=request.branch)
         repository = get_graph_repository()
         repository.initialize_schema()
+        graph_builder = GraphBuilder()
+        if repository.engine.dialect.name == "postgresql":
+            repository.init_vector_tables()
+            graph_builder = GraphBuilder(
+                embedding_builder=EmbeddingBuilder(),
+                vector_store=VectorStore(settings.DATABASE_URL),
+            )
+
+        graph = graph_builder.build_graph(repo_path=request.repo_path, branch=request.branch)
         repository.save_graphcode(graph)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=500, detail=str(exc)) from exc

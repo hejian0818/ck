@@ -6,12 +6,15 @@ import hashlib
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 
 from app.core.logging import get_logger
 from app.models.graph_objects import File, GraphCode, Module, Relation, RepoMeta, Span, Symbol
 from app.services.cleanarch.parser_factory import ParserFactory
 from app.services.cleanarch.scanner import RepoScanner
+from app.services.indexing.embedding_builder import EmbeddingBuilder
 from app.services.indexing.summary_builder import SummaryGenerationService
+from app.storage.vector_store import VectorStore
 
 logger = get_logger(__name__)
 
@@ -24,10 +27,14 @@ class GraphBuilder:
         scanner: RepoScanner | None = None,
         parser_factory: ParserFactory | None = None,
         summary_service: SummaryGenerationService | None = None,
+        embedding_builder: EmbeddingBuilder | None = None,
+        vector_store: VectorStore | None = None,
     ) -> None:
         self.scanner = scanner or RepoScanner()
         self.parser_factory = parser_factory or ParserFactory()
         self.summary_service = summary_service or SummaryGenerationService()
+        self.embedding_builder = embedding_builder
+        self.vector_store = vector_store
 
     def build_graph(self, repo_path: str, branch: str = "main") -> GraphCode:
         """Build a graph representation from a repository."""
@@ -162,7 +169,38 @@ class GraphBuilder:
                 }
             },
         )
-        return self.summary_service.enrich_graph(graph)
+        enriched_graph = self.summary_service.enrich_graph(graph)
+
+        if self.embedding_builder is not None and self.vector_store is not None:
+            embedding_start = perf_counter()
+            logger.info(
+                "embedding_indexing_started",
+                extra={
+                    "context": {
+                        "repo_id": enriched_graph.repo_meta.repo_id,
+                        "objects": (
+                            len(enriched_graph.modules)
+                            + len(enriched_graph.files)
+                            + len(enriched_graph.symbols)
+                            + len(enriched_graph.relations)
+                        ),
+                    }
+                },
+            )
+            embeddings = self.embedding_builder.build_embeddings(enriched_graph)
+            self.vector_store.save_embeddings(embeddings)
+            logger.info(
+                "embedding_indexing_completed",
+                extra={
+                    "context": {
+                        "repo_id": enriched_graph.repo_meta.repo_id,
+                        "embeddings": len(embeddings),
+                        "duration_ms": round((perf_counter() - embedding_start) * 1000, 3),
+                    }
+                },
+            )
+
+        return enriched_graph
 
     @staticmethod
     def _infer_module(relative_path: str, repo_name: str) -> tuple[str, str]:

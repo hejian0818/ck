@@ -11,8 +11,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.api.dependencies import get_graph_repository
+from app.core.config import settings
 from app.core.logging import configure_logging
 from app.services.cleanarch.graph_builder import GraphBuilder
+from app.services.indexing.embedding_builder import EmbeddingBuilder
+from app.storage.vector_store import VectorStore
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,9 +28,17 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     configure_logging()
-    graph = GraphBuilder().build_graph(repo_path=args.repo_path, branch=args.branch)
     repository = get_graph_repository()
     repository.initialize_schema()
+    graph_builder = GraphBuilder()
+    if repository.engine.dialect.name == "postgresql":
+        repository.init_vector_tables()
+        graph_builder = GraphBuilder(
+            embedding_builder=EmbeddingBuilder(),
+            vector_store=VectorStore(settings.DATABASE_URL),
+        )
+
+    graph = graph_builder.build_graph(repo_path=args.repo_path, branch=args.branch)
     repository.save_graphcode(graph)
     print(f"repo_id={graph.repo_meta.repo_id}")
     print(f"modules={len(graph.modules)} files={len(graph.files)} symbols={len(graph.symbols)} relations={len(graph.relations)}")
