@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 from time import perf_counter
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -18,6 +19,10 @@ from app.services.indexing.embedding_builder import EmbeddingBuilder
 from app.services.retrieval.doc_retriever import DocRetriever, SectionRetrievalResult
 from app.storage.repositories import GraphRepository
 from app.storage.vector_store import VectorStore
+
+if TYPE_CHECKING:
+    from app.services.memory.memory_manager import MemoryManager
+    from app.services.review.doc_reviewer import DocumentReviewer, ReviewResult
 
 GraphObject = Module | File | Symbol
 _API_SYMBOL_TYPES = {"route", "controller", "endpoint", "api"}
@@ -227,6 +232,8 @@ class DocAgent:
         context_builder: DocContextBuilder | None = None,
         diagram_generator: PlantUMLGenerator | None = None,
         llm_client: DocLLMClient | None = None,
+        memory_manager: MemoryManager | None = None,
+        reviewer: DocumentReviewer | None = None,
     ) -> None:
         self.repository = repository
         self.planner = planner or SkeletonPlanner(repository)
@@ -238,6 +245,8 @@ class DocAgent:
         self.context_builder = context_builder or DocContextBuilder()
         self.diagram_generator = diagram_generator or PlantUMLGenerator()
         self.llm_client = llm_client or DeterministicDocLLMClient()
+        self.memory_manager = memory_manager
+        self.reviewer = reviewer
 
     def plan(self, repo_id: str) -> DocumentSkeleton:
         """Return an auto-generated document skeleton."""
@@ -245,33 +254,186 @@ class DocAgent:
         return self.planner.plan(repo_id)
 
     def generate(self, repo_id: str, skeleton: DocumentSkeleton | None = None) -> DocumentResult:
-        """Generate deterministic markdown content for all planned sections."""
+        """Generate deterministic markdown content for all planned sections.
+
+        Integrates TaskMemory for progress tracking / checkpoint resume and
+        DocumentReviewer for automatic post-generation consistency review with
+        error-level auto-fix.
+        """
 
         started_at = perf_counter()
         active_skeleton = skeleton or self.plan(repo_id)
         capped_sections = active_skeleton.sections[: settings.DOC_MAX_SECTIONS]
+        section_ids = [s.section_id for s in capped_sections]
+
+        # --- TaskMemory: create or resume ---
+        task_memory = None
+        resumed = False
+        if self.memory_manager is not None:
+            existing = self.memory_manager.resume_task_memory("doc_generation", repo_id)
+            if existing is not None and existing.status == "in_progress":
+                task_memory = existing
+                resumed = True
+                self.logger.info(
+                    "doc_generation_resumed",
+                    extra={"context": {"repo_id": repo_id, "done_sections": list(existing.generated_sections)}},
+                )
+            else:
+                task_memory = self.memory_manager.create_task_memory(
+                    "doc_generation", repo_id, section_ids=section_ids,
+                )
+
         self.logger.info(
             "doc_generation_started",
-            extra={"context": {"repo_id": repo_id, "section_count": len(capped_sections)}},
+            extra={"context": {"repo_id": repo_id, "section_count": len(capped_sections), "resumed": resumed}},
         )
-        sections = [
-            self._generate_section(repo_id=repo_id, section=section)
-            for section in capped_sections
-        ]
-        elapsed_ms = int((perf_counter() - started_at) * 1000)
-        self.logger.info(
-            "doc_generation_completed",
-            extra={"context": {"repo_id": repo_id, "section_count": len(sections), "elapsed_ms": elapsed_ms}},
-        )
-        return DocumentResult(
+
+        # --- Generate sections (skip already-done on resume) ---
+        section_map: dict[str, SectionContent] = {}
+        for section in capped_sections:
+            if resumed and task_memory is not None and task_memory.progress.get(section.section_id) == "done":
+                # Restore from checkpoint if available
+                checkpoint_content = (task_memory.checkpoint_data or {}).get(f"section:{section.section_id}")
+                if checkpoint_content is not None:
+                    section_map[section.section_id] = SectionContent(**checkpoint_content)
+                    continue
+                # No checkpoint data — must regenerate
+            result = self._generate_section(repo_id=repo_id, section=section)
+            section_map[section.section_id] = result
+            if task_memory is not None and self.memory_manager is not None:
+                status = "done" if result.confidence > 0.0 else "failed"
+                self.memory_manager.update_task_progress(
+                    "doc_generation", repo_id, section.section_id, status,
+                    checkpoint={f"section:{section.section_id}": result.model_dump()},
+                )
+
+        sections = [section_map[s.section_id] for s in capped_sections if s.section_id in section_map]
+
+        # --- Build initial document ---
+        document = DocumentResult(
             repo_id=repo_id,
             title=active_skeleton.title,
             sections=sections,
             metadata={
                 "section_count": len(sections),
                 "generated_from_custom_skeleton": skeleton is not None,
+                "resumed": resumed,
             },
         )
+
+        # --- DocumentReviewer: auto-review + auto-fix ---
+        review_skeleton = DocumentSkeleton(
+            repo_id=repo_id,
+            title=active_skeleton.title,
+            sections=capped_sections,
+        )
+        if self.reviewer is not None:
+            document = self._run_review_and_autofix(repo_id, review_skeleton, document, section_map)
+
+        # --- TaskMemory: mark complete ---
+        if task_memory is not None and self.memory_manager is not None:
+            self.memory_manager.complete_task_memory("doc_generation", repo_id)
+
+        elapsed_ms = int((perf_counter() - started_at) * 1000)
+        self.logger.info(
+            "doc_generation_completed",
+            extra={"context": {"repo_id": repo_id, "section_count": len(document.sections), "elapsed_ms": elapsed_ms}},
+        )
+        return document
+
+    def _run_review_and_autofix(
+        self,
+        repo_id: str,
+        skeleton: DocumentSkeleton,
+        document: DocumentResult,
+        section_map: dict[str, SectionContent],
+    ) -> DocumentResult:
+        """Run DocumentReviewer and attempt auto-fix for error-level issues."""
+
+        assert self.reviewer is not None
+        review = self.reviewer.review(skeleton, document)
+        planned_map = {s.section_id: s for s in skeleton.sections}
+        warnings: list[dict[str, str]] = []
+        fixed_count = 0
+
+        for issue in review.issues:
+            if issue.severity == "warning" or issue.severity == "info":
+                warnings.append({
+                    "severity": issue.severity,
+                    "section_id": issue.section_id or "",
+                    "category": issue.category,
+                    "message": issue.message,
+                })
+                continue
+
+            if issue.severity != "error":
+                continue
+
+            # --- Auto-fix: missing section → regenerate ---
+            if issue.category == "structure" and "not generated" in issue.message:
+                sid = issue.section_id
+                if sid and sid in planned_map:
+                    self.logger.info("doc_autofix_regenerate_section", extra={"context": {"section_id": sid}})
+                    regenerated = self._generate_section(repo_id=repo_id, section=planned_map[sid])
+                    section_map[sid] = regenerated
+                    if self.memory_manager is not None:
+                        status = "done" if regenerated.confidence > 0.0 else "failed"
+                        self.memory_manager.update_task_progress(
+                            "doc_generation", repo_id, sid, status,
+                            checkpoint={f"section:{sid}": regenerated.model_dump()},
+                        )
+                    fixed_count += 1
+                continue
+
+            # --- Auto-fix: unknown object reference → remove from used_objects ---
+            if issue.category == "content" and "unknown object" in issue.message:
+                sid = issue.section_id
+                match = re.search(r"`([^`]+)`", issue.message)
+                if sid and match and sid in section_map:
+                    bad_id = match.group(1)
+                    section = section_map[sid]
+                    if bad_id in section.used_objects:
+                        section.used_objects.remove(bad_id)
+                        fixed_count += 1
+                continue
+
+            # --- Auto-fix: diagram error → regenerate diagrams ---
+            if issue.category == "diagram" and issue.section_id:
+                sid = issue.section_id
+                if sid in planned_map and sid in section_map:
+                    self.logger.info("doc_autofix_regenerate_diagram", extra={"context": {"section_id": sid}})
+                    try:
+                        retrieval = self.retriever.retrieve(repo_id=repo_id, section=planned_map[sid])
+                        new_diagrams = self._generate_diagrams(repo_id, planned_map[sid], retrieval)
+                        section_map[sid].diagrams = new_diagrams
+                        fixed_count += 1
+                    except Exception:
+                        self.logger.exception("doc_autofix_diagram_failed", extra={"context": {"section_id": sid}})
+                continue
+
+        # Rebuild sections in skeleton order
+        rebuilt_sections = [
+            section_map[s.section_id]
+            for s in skeleton.sections
+            if s.section_id in section_map
+        ]
+        document.sections = rebuilt_sections
+        document.metadata["review_passed"] = review.passed or fixed_count > 0
+        document.metadata["review_warnings"] = warnings
+        document.metadata["review_autofix_count"] = fixed_count
+        document.metadata["section_count"] = len(rebuilt_sections)
+
+        self.logger.info(
+            "doc_review_completed",
+            extra={"context": {
+                "repo_id": document.repo_id,
+                "passed": review.passed,
+                "issue_count": len(review.issues),
+                "warning_count": len(warnings),
+                "autofix_count": fixed_count,
+            }},
+        )
+        return document
 
     def list_sections(self, repo_id: str) -> list[SectionPlan]:
         """Return planned sections for a repository."""
