@@ -65,6 +65,47 @@ class MemoryManagerTests(unittest.TestCase):
             "how does parser adapter work",
         )
 
+    def test_task_memory_tracks_progress_and_resume_state(self) -> None:
+        manager = MemoryManager()
+
+        created = manager.create_task_memory(
+            task_type="doc_generation",
+            repo_id="repo-1",
+            section_ids=["overview", "summary"],
+            checkpoint_data={"current_section": "overview"},
+        )
+        initial_progress = dict(created.progress)
+        updated = manager.update_task_progress(
+            task_type="doc_generation",
+            repo_id="repo-1",
+            section_id="overview",
+            status="done",
+            checkpoint={"current_section": "summary"},
+        )
+        resumed = manager.resume_task_memory("doc_generation", "repo-1")
+
+        self.assertEqual(initial_progress, {"overview": "pending", "summary": "pending"})
+        self.assertEqual(updated.generated_sections, ["overview"])
+        self.assertEqual(updated.checkpoint_data["current_section"], "summary")
+        self.assertIsNotNone(resumed)
+        self.assertEqual(resumed.progress["overview"], "done")
+        self.assertEqual(resumed.status, "in_progress")
+
+    def test_task_memory_marks_section_failed_after_fourth_retry(self) -> None:
+        manager = MemoryManager()
+        manager.create_task_memory(
+            task_type="doc_generation",
+            repo_id="repo-2",
+            section_ids=["architecture"],
+        )
+
+        for _ in range(4):
+            task_memory = manager.increment_task_retry("doc_generation", "repo-2", "architecture")
+
+        self.assertEqual(task_memory.retry_count["architecture"], 4)
+        self.assertEqual(task_memory.progress["architecture"], "failed")
+        self.assertEqual(task_memory.status, "failed")
+
 
 if __name__ == "__main__":
     unittest.main()

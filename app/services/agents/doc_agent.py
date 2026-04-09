@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Protocol
 
 from app.core.config import settings
 from app.models.doc_models import DocumentResult, DocumentSkeleton, SectionContent, SectionPlan
 from app.models.graph_objects import File, Module, Relation, Symbol
+from app.services.context.doc_context_builder import DocContextBuilder
+from app.services.diagrams.plantuml_generator import PlantUMLGenerator
 from app.services.indexing.embedding_builder import EmbeddingBuilder
 from app.services.retrieval.doc_retriever import DocRetriever, SectionRetrievalResult
 from app.storage.repositories import GraphRepository
@@ -15,6 +18,56 @@ from app.storage.vector_store import VectorStore
 
 GraphObject = Module | File | Symbol
 _API_SYMBOL_TYPES = {"route", "controller", "endpoint", "api"}
+_CLASS_SYMBOL_TYPES = {"class", "interface"}
+_SEQUENCE_SECTION_TYPES = {"api", "data_flow"}
+
+
+class DocLLMClient(Protocol):
+    """Protocol for pluggable paragraph generators."""
+
+    def generate(self, section: SectionPlan, retrieval: SectionRetrievalResult, prompt: str) -> str:
+        """Generate markdown content for a document section."""
+
+
+class DeterministicDocLLMClient:
+    """Deterministic fallback paragraph generator for offline document rendering."""
+
+    def generate(self, section: SectionPlan, retrieval: SectionRetrievalResult, prompt: str) -> str:  # noqa: ARG002
+        subheading = "#" * (max(section.level, 1) + 1)
+        lines = [f"{'#' * max(section.level, 1)} {section.title}", "", section.description]
+
+        objects = retrieval.objects[: settings.DOC_RETRIEVAL_TOP_K]
+        if objects:
+            lines.extend(["", f"{subheading} 关键对象", "关键对象:"])
+            for object_ in objects:
+                lines.append(f"- {DocAgent.describe_object(object_)}")
+
+        relations = retrieval.relations[: settings.DOC_VECTOR_TOP_K]
+        if relations:
+            lines.extend(["", f"{subheading} 关键关系", "关键关系:"])
+            for relation in relations:
+                lines.append(f"- {DocAgent.describe_relation(relation)}")
+
+        conclusion = self._build_conclusion(section, retrieval)
+        if conclusion:
+            lines.extend(["", f"{subheading} 说明", conclusion])
+
+        return "\n".join(lines).strip()
+
+    def _build_conclusion(self, section: SectionPlan, retrieval: SectionRetrievalResult) -> str:
+        if section.section_type == "overview":
+            module_names = [object_.name for object_ in retrieval.objects if isinstance(object_, Module)]
+            if module_names:
+                return f"系统当前主要由 {', '.join(module_names[:4])} 等模块组成，并通过明确的职责边界协作。"
+        if section.section_type == "dependency":
+            dependencies = [relation.relation_type for relation in retrieval.relations]
+            if dependencies:
+                return f"跨模块关系以 {', '.join(sorted(set(dependencies)))} 为主，需要重点关注依赖方向的一致性。"
+        if section.section_type in _SEQUENCE_SECTION_TYPES:
+            return "调用链展示了入口逻辑与下游实现之间的衔接顺序，可据此继续补充接口和数据约束。"
+        if section.section_type == "summary":
+            return "后续维护应优先关注核心模块边界、关键调用链和跨模块依赖变化。"
+        return "以上信息基于当前检索到的代码图谱对象整理。"
 
 
 class SkeletonPlanner:
@@ -159,13 +212,16 @@ class SkeletonPlanner:
 
 
 class DocAgent:
-    """Coordinate planning, retrieval, and deterministic section rendering."""
+    """Coordinate planning, retrieval, paragraph generation, and diagram rendering."""
 
     def __init__(
         self,
         repository: GraphRepository,
         planner: SkeletonPlanner | None = None,
         retriever: DocRetriever | None = None,
+        context_builder: DocContextBuilder | None = None,
+        diagram_generator: PlantUMLGenerator | None = None,
+        llm_client: DocLLMClient | None = None,
     ) -> None:
         self.repository = repository
         self.planner = planner or SkeletonPlanner(repository)
@@ -174,6 +230,9 @@ class DocAgent:
             embedding_builder=EmbeddingBuilder(),
             vector_store=VectorStore(settings.DATABASE_URL),
         )
+        self.context_builder = context_builder or DocContextBuilder()
+        self.diagram_generator = diagram_generator or PlantUMLGenerator()
+        self.llm_client = llm_client or DeterministicDocLLMClient()
 
     def plan(self, repo_id: str) -> DocumentSkeleton:
         """Return an auto-generated document skeleton."""
@@ -204,51 +263,131 @@ class DocAgent:
         return self.plan(repo_id).sections
 
     def _generate_section(self, repo_id: str, section: SectionPlan) -> SectionContent:
-        retrieval = self.retriever.retrieve(repo_id=repo_id, section=section)
-        content = self._render_section_content(retrieval)
-        used_objects = [object_.id for object_ in retrieval.objects]
-        confidence = self._section_confidence(retrieval)
-        return SectionContent(
-            section_id=section.section_id,
-            title=section.title,
-            content=content,
-            diagrams=[],
-            used_objects=used_objects,
-            confidence=confidence,
-        )
+        try:
+            retrieval = self.retriever.retrieve(repo_id=repo_id, section=section)
+            prompt = self.context_builder.build_context(section, retrieval)
+            raw_content = self.llm_client.generate(section, retrieval, prompt)
+            content = self._post_process_markdown(section, raw_content)
+            diagrams = self._generate_diagrams(repo_id, section, retrieval)
+            used_objects = [object_.id for object_ in retrieval.objects]
+            confidence = self._section_confidence(retrieval, content)
+            return SectionContent(
+                section_id=section.section_id,
+                title=section.title,
+                content=content,
+                diagrams=diagrams,
+                used_objects=used_objects,
+                confidence=confidence,
+            )
+        except Exception:
+            return SectionContent(
+                section_id=section.section_id,
+                title=section.title,
+                content=self._failed_section_markdown(section),
+                diagrams=[],
+                used_objects=[],
+                confidence=0.0,
+            )
 
-    def _render_section_content(self, retrieval: SectionRetrievalResult) -> str:
-        section = retrieval.section
-        lines = [section.description]
-        summaries = [self._describe_object(object_) for object_ in retrieval.objects[: settings.DOC_RETRIEVAL_TOP_K]]
-        if summaries:
-            lines.append("")
-            lines.append("关键对象:")
-            lines.extend(f"- {summary}" for summary in summaries)
-
-        relation_lines = [self._describe_relation(relation) for relation in retrieval.relations[: settings.DOC_VECTOR_TOP_K]]
-        if relation_lines:
-            lines.append("")
-            lines.append("关键关系:")
-            lines.extend(f"- {line}" for line in relation_lines)
-
-        return "\n".join(lines)
-
-    def _describe_object(self, object_: GraphObject) -> str:
+    @staticmethod
+    def describe_object(object_: GraphObject) -> str:
         if isinstance(object_, Module):
-            summary = self._extract_summary_text(object_.summary, object_.name)
+            summary = DocAgent._extract_summary_text(object_.summary, object_.name)
             return f"模块 `{object_.name}`: {summary}"
         if isinstance(object_, File):
-            summary = self._extract_summary_text(object_.summary, object_.path)
+            summary = DocAgent._extract_summary_text(object_.summary, object_.path)
             return f"文件 `{object_.path}`: {summary}"
-        summary = self._extract_summary_text(object_.summary or object_.doc, object_.qualified_name)
+        summary = DocAgent._extract_summary_text(object_.summary or object_.doc, object_.qualified_name)
         return f"符号 `{object_.qualified_name}` ({object_.type}): {summary}"
 
-    def _describe_relation(self, relation: Relation) -> str:
-        summary = self._extract_summary_text(relation.summary, relation.relation_type)
+    @staticmethod
+    def describe_relation(relation: Relation) -> str:
+        summary = DocAgent._extract_summary_text(relation.summary, relation.relation_type)
         return (
             f"`{relation.source_id}` {relation.relation_type} `{relation.target_id}`"
             f": {summary}"
+        )
+
+    def _post_process_markdown(self, section: SectionPlan, content: str) -> str:
+        normalized = content.strip()
+        if not normalized:
+            raise ValueError(f"empty content for section {section.section_id}")
+
+        heading = f"{'#' * max(section.level, 1)} {section.title}"
+        if not normalized.startswith("#"):
+            normalized = f"{heading}\n\n{normalized}"
+        elif not normalized.startswith(heading):
+            parts = normalized.splitlines()
+            parts[0] = heading
+            normalized = "\n".join(parts)
+
+        return normalized.replace("\r\n", "\n")
+
+    def _generate_diagrams(
+        self,
+        repo_id: str,
+        section: SectionPlan,
+        retrieval: SectionRetrievalResult,
+    ) -> list[str]:
+        try:
+            if section.section_type == "overview":
+                modules = [object_ for object_ in retrieval.objects if isinstance(object_, Module)]
+                if modules:
+                    relations = [
+                        relation
+                        for relation in self.repository.list_relations(repo_id)
+                        if relation.source_module_id != relation.target_module_id
+                    ]
+                    return [self.diagram_generator.generate_component_diagram(modules, relations)]
+
+            if section.section_type == "module":
+                class_symbols = [
+                    object_
+                    for object_ in retrieval.objects
+                    if isinstance(object_, Symbol) and object_.type.lower() in _CLASS_SYMBOL_TYPES
+                ]
+                if class_symbols:
+                    relations = self._collect_symbol_relations(class_symbols)
+                    return [self.diagram_generator.generate_class_diagram(class_symbols, relations)]
+
+            if section.section_type in _SEQUENCE_SECTION_TYPES:
+                entry_symbol = self._resolve_entry_symbol(retrieval)
+                call_chain = [relation for relation in retrieval.relations if relation.relation_type.lower() == "calls"]
+                if entry_symbol is not None and call_chain:
+                    return [self.diagram_generator.generate_sequence_diagram(entry_symbol, call_chain)]
+        except Exception:
+            return []
+        return []
+
+    def _resolve_entry_symbol(self, retrieval: SectionRetrievalResult) -> Symbol | None:
+        symbols = [object_ for object_ in retrieval.objects if isinstance(object_, Symbol)]
+        if not symbols:
+            return None
+
+        source_ids = {relation.source_id for relation in retrieval.relations if relation.relation_type.lower() == "calls"}
+        for symbol in symbols:
+            if symbol.id in source_ids:
+                return symbol
+        return symbols[0]
+
+    def _collect_symbol_relations(self, symbols: list[Symbol]) -> list[Relation]:
+        relation_map: dict[str, Relation] = {}
+        symbol_ids = {symbol.id for symbol in symbols}
+        for symbol in symbols:
+            candidates = self.repository.get_relations_by_source(symbol.id)
+            candidates.extend(self.repository.get_relations_by_target(symbol.id))
+            for relation in candidates:
+                if relation.source_id in symbol_ids and relation.target_id in symbol_ids:
+                    relation_map[relation.id] = relation
+        return list(relation_map.values())
+
+    def _failed_section_markdown(self, section: SectionPlan) -> str:
+        return "\n".join(
+            [
+                f"{'#' * max(section.level, 1)} {section.title}",
+                "",
+                "本文段生成失败，当前结果已跳过，不影响其他段落输出。",
+            ]
         )
 
     @staticmethod
@@ -268,7 +407,9 @@ class DocAgent:
         return fallback
 
     @staticmethod
-    def _section_confidence(retrieval: SectionRetrievalResult) -> float:
+    def _section_confidence(retrieval: SectionRetrievalResult, content: str) -> float:
+        if not content.strip():
+            return 0.0
         if not retrieval.object_scores:
             return 0.2 if retrieval.objects else 0.0
         top_scores = sorted(retrieval.object_scores.values(), reverse=True)[:3]
