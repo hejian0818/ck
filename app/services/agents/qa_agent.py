@@ -12,10 +12,12 @@ from app.models.qa_models import CodeSelection, QAResponse, RetrievalResult
 from app.services.agents.metrics import Metrics, MetricsCalculator
 from app.services.agents.strategy import Strategy, StrategyExecutionContext, StrategyRouter
 from app.services.context.context_builder import ContextBuilder
+from app.services.indexing.embedding_builder import EmbeddingBuilder
 from app.services.memory.memory_manager import MemoryManager
 from app.services.retrieval.anchor_resolver import AnchorResolver
 from app.services.retrieval.retriever import Retriever
 from app.storage.repositories import GraphRepository
+from app.storage.vector_store import VectorStore
 
 try:
     from openai import OpenAI
@@ -63,7 +65,11 @@ class QAAgent:
         self.repository = repository
         self.memory_manager = memory_manager or MemoryManager()
         self.anchor_resolver = anchor_resolver or AnchorResolver(repository)
-        self.retriever = retriever or Retriever(repository)
+        self.retriever = retriever or Retriever(
+            repository,
+            embedding_builder=EmbeddingBuilder(),
+            vector_store=VectorStore(settings.DATABASE_URL),
+        )
         self.context_builder = context_builder or ContextBuilder()
         self.llm_client = llm_client or OpenAICompatibleClient()
         self.metrics_calculator = MetricsCalculator()
@@ -80,7 +86,12 @@ class QAAgent:
         started_at = time.perf_counter()
         memory = self.memory_manager.get_anchor_memory(session_id)
         anchor = self.anchor_resolver.resolve_anchor(question=question, selection=selection, memory=memory)
-        initial_result = self.retriever.retrieve(anchor=anchor, question=question)
+        initial_result = self.retriever.retrieve(
+            anchor=anchor,
+            question=question,
+            repo_id=repo_id,
+            memory=memory,
+        )
 
         initial_metrics = self.metrics_calculator.calculate(
             anchor=anchor,

@@ -214,6 +214,19 @@ class GraphRepository:
         )
         return [Relation(**row._mapping) for row in rows]
 
+    def get_relation_by_id(self, relation_id: str) -> Relation | None:
+        row = self._fetch_one(
+            """
+            SELECT id, relation_type, source_id, target_id, source_type, target_type,
+                   source_module_id, target_module_id, summary
+            FROM relations WHERE id = :id
+            """,
+            {"id": relation_id},
+        )
+        if not row:
+            return None
+        return Relation(**row._mapping)
+
     def find_span(self, file_path: str, line_start: int, line_end: int) -> list[Span]:
         rows = self._fetch_all(
             """
@@ -246,6 +259,100 @@ class GraphRepository:
             FROM symbols WHERE file_id = :file_id
             """,
             {"file_id": file_id},
+        )
+        return [Symbol(**row._mapping) for row in rows]
+
+    def find_modules_by_name(self, name: str, limit: int = 10) -> list[Module]:
+        normalized = name.strip().lower()
+        if not normalized:
+            return []
+
+        rows = self._fetch_all(
+            """
+            SELECT id, name, path, summary, metadata
+            FROM modules
+            WHERE lower(name) = :name
+               OR lower(path) = :name
+               OR lower(name) LIKE :partial
+               OR lower(path) LIKE :partial
+            ORDER BY
+                CASE
+                    WHEN lower(name) = :name THEN 0
+                    WHEN lower(path) = :name THEN 1
+                    ELSE 2
+                END,
+                length(path) ASC
+            LIMIT :limit
+            """,
+            {"name": normalized, "partial": f"%{normalized}%", "limit": limit},
+        )
+
+        modules: list[Module] = []
+        for row in rows:
+            metadata = row.metadata or {}
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            modules.append(
+                Module(
+                    id=row.id,
+                    name=row.name,
+                    path=row.path,
+                    summary=row.summary,
+                    metadata=metadata,
+                )
+            )
+        return modules
+
+    def find_files_by_name(self, name: str, limit: int = 10) -> list[File]:
+        normalized = name.strip().lower()
+        if not normalized:
+            return []
+
+        rows = self._fetch_all(
+            """
+            SELECT id, name, path, module_id, summary, language, start_line, end_line
+            FROM files
+            WHERE lower(name) = :name
+               OR lower(path) = :name
+               OR lower(name) LIKE :partial
+               OR lower(path) LIKE :partial
+            ORDER BY
+                CASE
+                    WHEN lower(name) = :name THEN 0
+                    WHEN lower(path) = :name THEN 1
+                    ELSE 2
+                END,
+                length(path) ASC
+            LIMIT :limit
+            """,
+            {"name": normalized, "partial": f"%{normalized}%", "limit": limit},
+        )
+        return [File(**row._mapping) for row in rows]
+
+    def find_symbols_by_name(self, name: str, limit: int = 10) -> list[Symbol]:
+        normalized = name.strip().lower()
+        if not normalized:
+            return []
+
+        rows = self._fetch_all(
+            """
+            SELECT id, name, qualified_name, type, signature, file_id, module_id,
+                   summary, start_line, end_line, visibility, doc
+            FROM symbols
+            WHERE lower(name) = :name
+               OR lower(qualified_name) = :name
+               OR lower(name) LIKE :partial
+               OR lower(qualified_name) LIKE :partial
+            ORDER BY
+                CASE
+                    WHEN lower(qualified_name) = :name THEN 0
+                    WHEN lower(name) = :name THEN 1
+                    ELSE 2
+                END,
+                length(qualified_name) ASC
+            LIMIT :limit
+            """,
+            {"name": normalized, "partial": f"%{normalized}%", "limit": limit},
         )
         return [Symbol(**row._mapping) for row in rows]
 

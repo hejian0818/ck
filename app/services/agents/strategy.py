@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -54,6 +55,12 @@ class StrategyRouter:
             return Strategy.S1
         if (
             metrics.A >= thresholds.ANCHOR_CONFIDENCE_WEAK
+            and metrics.E >= thresholds.EVIDENCE_SUFFICIENT
+            and metrics.C >= thresholds.RETRIEVAL_CONCENTRATION
+        ):
+            return Strategy.S1
+        if (
+            metrics.A >= thresholds.ANCHOR_CONFIDENCE_WEAK
             and metrics.E < thresholds.EVIDENCE_SUFFICIENT
             and metrics.C >= thresholds.RETRIEVAL_CONCENTRATION_ENHANCED
         ):
@@ -86,7 +93,16 @@ class StrategyRouter:
             return StrategyExecution(strategy=strategy, retrieval_result=context.initial_result)
 
         if strategy == Strategy.S2:
-            expanded_result = context.retriever.expand_retrieval(context.initial_result, max_depth=2)
+            expand_signature = inspect.signature(context.retriever.expand_retrieval)
+            if "question" in expand_signature.parameters:
+                expanded_result = context.retriever.expand_retrieval(
+                    context.initial_result,
+                    question=context.question,
+                    memory=context.memory,
+                    max_depth=2,
+                )
+            else:
+                expanded_result = context.retriever.expand_retrieval(context.initial_result, max_depth=2)
             expanded_object_ids = [
                 object_.id
                 for object_ in expanded_result.related_objects
@@ -106,7 +122,15 @@ class StrategyRouter:
                     max(inferred_anchor.confidence, thresholds.ANCHOR_CONFIDENCE_DEGRADE),
                 )
                 inferred_anchor.source = "retrieval_infer"
-                inferred_result = context.retriever.retrieve(inferred_anchor, context.question)
+                retrieve_signature = inspect.signature(context.retriever.retrieve)
+                if "memory" in retrieve_signature.parameters:
+                    inferred_result = context.retriever.retrieve(
+                        inferred_anchor,
+                        context.question,
+                        memory=context.memory,
+                    )
+                else:
+                    inferred_result = context.retriever.retrieve(inferred_anchor, context.question)
                 return StrategyExecution(strategy=strategy, retrieval_result=inferred_result)
 
             return StrategyExecution(

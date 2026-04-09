@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 from app.models.graph_objects import File, Module, Relation, Span, Symbol
 from app.models.qa_models import CodeSelection
 from app.services.agents.qa_agent import QAAgent
 from app.services.memory.memory_manager import MemoryManager
+from app.services.retrieval.retriever import Retriever
 
 
 class _RepoStub:
@@ -100,15 +102,59 @@ class _RepoStub:
     def list_files_by_module(self, module_id: str):
         return [self.file_obj]
 
+    def find_symbols_by_name(self, name: str, limit: int = 10):  # noqa: ARG002
+        if name in {"greetingservice.greet", "greet"}:
+            return [self.greet]
+        return []
+
+    def find_files_by_name(self, name: str, limit: int = 10):  # noqa: ARG002
+        if name == "services.py":
+            return [self.file_obj]
+        return []
+
+    def find_modules_by_name(self, name: str, limit: int = 10):  # noqa: ARG002
+        if name == "app_core":
+            return [self.module]
+        return []
+
+    def get_relation_by_id(self, relation_id: str):
+        if relation_id == "R_1":
+            return self.get_relations_by_source(self.greet.id)[0]
+        return None
+
 
 class _LLMStub:
     def generate(self, prompt: str) -> str:
         return f"stubbed answer for: {prompt.splitlines()[0]}"
 
 
+class _EmbeddingBuilderStub:
+    def encode_summary(self, summary: str) -> list[float]:
+        return [0.1, 0.9]
+
+
+class _VectorStoreStub:
+    def search_symbols(self, repo_id: str, query_vector: list[float]):
+        _ = (repo_id, query_vector)
+        return [SimpleNamespace(object_id="S_app_core.GreetingService.greet", object_type="symbol", similarity=0.92)]
+
+    def search_files(self, repo_id: str, query_vector: list[float]):
+        _ = (repo_id, query_vector)
+        return []
+
+    def search_modules(self, repo_id: str, query_vector: list[float]):
+        _ = (repo_id, query_vector)
+        return []
+
+
 class QAAgentTests(unittest.TestCase):
     def test_answer_returns_anchor_and_used_objects(self) -> None:
-        agent = QAAgent(repository=_RepoStub(), memory_manager=MemoryManager(), llm_client=_LLMStub())
+        agent = QAAgent(
+            repository=_RepoStub(),
+            memory_manager=MemoryManager(),
+            llm_client=_LLMStub(),
+            retriever=Retriever(_RepoStub()),
+        )
         response = agent.answer(
             repo_id="repo_sample",
             question="这个方法做什么？",
@@ -128,7 +174,12 @@ class QAAgentTests(unittest.TestCase):
 
     def test_answer_degrades_without_anchor_and_inherits_memory_on_follow_up(self) -> None:
         memory_manager = MemoryManager()
-        agent = QAAgent(repository=_RepoStub(), memory_manager=memory_manager, llm_client=_LLMStub())
+        agent = QAAgent(
+            repository=_RepoStub(),
+            memory_manager=memory_manager,
+            llm_client=_LLMStub(),
+            retriever=Retriever(_RepoStub()),
+        )
 
         first_response = agent.answer(
             repo_id="repo_sample",
@@ -160,6 +211,30 @@ class QAAgentTests(unittest.TestCase):
         self.assertEqual(degraded_response.strategy_used, "S4")
         self.assertTrue(degraded_response.need_more_context)
         self.assertTrue(degraded_response.suggestions)
+
+    def test_answer_supports_name_based_anchor_without_selection(self) -> None:
+        repository = _RepoStub()
+        agent = QAAgent(
+            repository=repository,
+            memory_manager=MemoryManager(),
+            llm_client=_LLMStub(),
+            retriever=Retriever(
+                repository,
+                embedding_builder=_EmbeddingBuilderStub(),
+                vector_store=_VectorStoreStub(),
+            ),
+        )
+
+        response = agent.answer(
+            repo_id="repo_sample",
+            question="GreetingService.greet 做什么？",
+            selection=None,
+            session_id="session-4",
+        )
+
+        self.assertEqual(response.anchor.source, "name_match")
+        self.assertFalse(response.degraded)
+        self.assertIn("S_app_core.GreetingService.greet", response.used_objects)
 
 
 if __name__ == "__main__":
