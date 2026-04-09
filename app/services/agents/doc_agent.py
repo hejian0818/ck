@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+from time import perf_counter
 from pathlib import Path
 from typing import Protocol
 
 from app.core.config import settings
+from app.core.logging import get_logger
+from app.core.metrics import metrics
 from app.models.doc_models import DocumentResult, DocumentSkeleton, SectionContent, SectionPlan
 from app.models.graph_objects import File, Module, Relation, Symbol
 from app.services.context.doc_context_builder import DocContextBuilder
@@ -214,6 +217,8 @@ class SkeletonPlanner:
 class DocAgent:
     """Coordinate planning, retrieval, paragraph generation, and diagram rendering."""
 
+    logger = get_logger(__name__)
+
     def __init__(
         self,
         repository: GraphRepository,
@@ -242,11 +247,22 @@ class DocAgent:
     def generate(self, repo_id: str, skeleton: DocumentSkeleton | None = None) -> DocumentResult:
         """Generate deterministic markdown content for all planned sections."""
 
+        started_at = perf_counter()
         active_skeleton = skeleton or self.plan(repo_id)
+        capped_sections = active_skeleton.sections[: settings.DOC_MAX_SECTIONS]
+        self.logger.info(
+            "doc_generation_started",
+            extra={"context": {"repo_id": repo_id, "section_count": len(capped_sections)}},
+        )
         sections = [
             self._generate_section(repo_id=repo_id, section=section)
-            for section in active_skeleton.sections
+            for section in capped_sections
         ]
+        elapsed_ms = int((perf_counter() - started_at) * 1000)
+        self.logger.info(
+            "doc_generation_completed",
+            extra={"context": {"repo_id": repo_id, "section_count": len(sections), "elapsed_ms": elapsed_ms}},
+        )
         return DocumentResult(
             repo_id=repo_id,
             title=active_skeleton.title,
@@ -263,6 +279,7 @@ class DocAgent:
         return self.plan(repo_id).sections
 
     def _generate_section(self, repo_id: str, section: SectionPlan) -> SectionContent:
+        section_started = perf_counter()
         try:
             retrieval = self.retriever.retrieve(repo_id=repo_id, section=section)
             prompt = self.context_builder.build_context(section, retrieval)
@@ -271,6 +288,21 @@ class DocAgent:
             diagrams = self._generate_diagrams(repo_id, section, retrieval)
             used_objects = [object_.id for object_ in retrieval.objects]
             confidence = self._section_confidence(retrieval, content)
+            if confidence < 0.3:
+                content = self._label_low_confidence(content)
+            section_elapsed = int((perf_counter() - section_started) * 1000)
+            metrics.increment("doc.sections.generated")
+            metrics.observe("doc.section.latency_ms", section_elapsed)
+            self.logger.info(
+                "doc_section_generated",
+                extra={"context": {
+                    "repo_id": repo_id,
+                    "section_id": section.section_id,
+                    "section_type": section.section_type,
+                    "confidence": confidence,
+                    "elapsed_ms": section_elapsed,
+                }},
+            )
             return SectionContent(
                 section_id=section.section_id,
                 title=section.title,
@@ -280,6 +312,17 @@ class DocAgent:
                 confidence=confidence,
             )
         except Exception:
+            metrics.increment("doc.sections.failed")
+            section_elapsed = int((perf_counter() - section_started) * 1000)
+            self.logger.exception(
+                "doc_section_failed",
+                extra={"context": {
+                    "repo_id": repo_id,
+                    "section_id": section.section_id,
+                    "section_type": section.section_type,
+                    "elapsed_ms": section_elapsed,
+                }},
+            )
             return SectionContent(
                 section_id=section.section_id,
                 title=section.title,
@@ -329,10 +372,21 @@ class DocAgent:
         section: SectionPlan,
         retrieval: SectionRetrievalResult,
     ) -> list[str]:
+        if not settings.DOC_DIAGRAM_ENABLED:
+            return []
         try:
             if section.section_type == "overview":
                 modules = [object_ for object_ in retrieval.objects if isinstance(object_, Module)]
                 if modules:
+                    self.logger.info(
+                        "doc_diagram_generation_attempt",
+                        extra={"context": {
+                            "repo_id": repo_id,
+                            "section_id": section.section_id,
+                            "section_type": section.section_type,
+                            "diagram_type": "component",
+                        }},
+                    )
                     relations = [
                         relation
                         for relation in self.repository.list_relations(repo_id)
@@ -347,6 +401,15 @@ class DocAgent:
                     if isinstance(object_, Symbol) and object_.type.lower() in _CLASS_SYMBOL_TYPES
                 ]
                 if class_symbols:
+                    self.logger.info(
+                        "doc_diagram_generation_attempt",
+                        extra={"context": {
+                            "repo_id": repo_id,
+                            "section_id": section.section_id,
+                            "section_type": section.section_type,
+                            "diagram_type": "class",
+                        }},
+                    )
                     relations = self._collect_symbol_relations(class_symbols)
                     return [self.diagram_generator.generate_class_diagram(class_symbols, relations)]
 
@@ -354,8 +417,25 @@ class DocAgent:
                 entry_symbol = self._resolve_entry_symbol(retrieval)
                 call_chain = [relation for relation in retrieval.relations if relation.relation_type.lower() == "calls"]
                 if entry_symbol is not None and call_chain:
+                    self.logger.info(
+                        "doc_diagram_generation_attempt",
+                        extra={"context": {
+                            "repo_id": repo_id,
+                            "section_id": section.section_id,
+                            "section_type": section.section_type,
+                            "diagram_type": "sequence",
+                        }},
+                    )
                     return [self.diagram_generator.generate_sequence_diagram(entry_symbol, call_chain)]
         except Exception:
+            self.logger.exception(
+                "doc_diagram_generation_failed",
+                extra={"context": {
+                    "repo_id": repo_id,
+                    "section_id": section.section_id,
+                    "section_type": section.section_type,
+                }},
+            )
             return []
         return []
 
@@ -389,6 +469,15 @@ class DocAgent:
                 "本文段生成失败，当前结果已跳过，不影响其他段落输出。",
             ]
         )
+
+    @staticmethod
+    def _label_low_confidence(content: str) -> str:
+        lines = content.splitlines()
+        if lines and lines[0].startswith("#"):
+            lines.insert(1, "\n> [Low Confidence] 本段落生成置信度较低，内容仅供参考。\n")
+        else:
+            lines.insert(0, "> [Low Confidence] 本段落生成置信度较低，内容仅供参考。\n")
+        return "\n".join(lines)
 
     @staticmethod
     def _extract_summary_text(raw_summary: str, fallback: str) -> str:

@@ -1,5 +1,7 @@
 """Application configuration."""
 
+from __future__ import annotations
+
 from functools import lru_cache
 
 from pydantic import Field
@@ -36,6 +38,13 @@ class Settings(BaseSettings):
     LLM_API_BASE: str = Field(default="http://localhost:11434/v1")
     LLM_API_KEY: str = Field(default="dummy")
     LLM_MODEL: str = Field(default="qwen2.5-coder:7b")
+    DOC_MAX_SECTIONS: int = Field(default=50)
+    DOC_SECTION_MAX_TOKENS: int = Field(default=2000)
+    DOC_DIAGRAM_ENABLED: bool = Field(default=True)
+    CACHE_EMBEDDING_SIZE: int = Field(default=1000)
+    CACHE_GRAPH_TTL: int = Field(default=60)
+    LLM_MAX_RETRIES: int = Field(default=3)
+    LLM_TIMEOUT: int = Field(default=30)
 
 
 @lru_cache

@@ -3,12 +3,39 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
+from app.core.config import settings
 from app.models.graph_objects import File, GraphCode, Module, Relation, Span, Symbol
+
+
+class _TTLCache:
+    """Simple dict-backed TTL cache."""
+
+    def __init__(self, ttl: int = 60, time_fn: object | None = None) -> None:
+        self._store: dict[str, tuple[float, object]] = {}
+        self._ttl = ttl
+        self._time_fn = time_fn or time.monotonic
+
+    def get(self, key: str) -> object | None:
+        entry = self._store.get(key)
+        if entry is None:
+            return None
+        expires_at, value = entry
+        if self._time_fn() >= expires_at:
+            del self._store[key]
+            return None
+        return value
+
+    def set(self, key: str, value: object) -> None:
+        self._store[key] = (self._time_fn() + self._ttl, value)
+
+    def clear(self) -> None:
+        self._store.clear()
 
 
 class GraphRepository:
@@ -16,6 +43,7 @@ class GraphRepository:
 
     def __init__(self, database_url: str, engine: Engine | None = None) -> None:
         self.engine = engine or create_engine(database_url)
+        self._object_cache = _TTLCache(ttl=settings.CACHE_GRAPH_TTL)
 
     def initialize_schema(self) -> None:
         statements = self._load_schema_statements()
@@ -154,8 +182,13 @@ class GraphRepository:
                     ),
                     {"repo_id": repo_id, **span.model_dump()},
                 )
+        self.clear_cache()
 
     def get_module_by_id(self, module_id: str) -> Module | None:
+        cache_key = f"get_module_by_id:{module_id}"
+        cached = self._object_cache.get(cache_key)
+        if cached is not None:
+            return cached
         row = self._fetch_one(
             "SELECT id, name, path, summary, metadata FROM modules WHERE id = :id",
             {"id": module_id},
@@ -165,9 +198,15 @@ class GraphRepository:
         metadata = row.metadata or {}
         if isinstance(metadata, str):
             metadata = json.loads(metadata)
-        return Module(id=row.id, name=row.name, path=row.path, summary=row.summary, metadata=metadata)
+        module = Module(id=row.id, name=row.name, path=row.path, summary=row.summary, metadata=metadata)
+        self._object_cache.set(cache_key, module)
+        return module
 
     def get_file_by_id(self, file_id: str) -> File | None:
+        cache_key = f"get_file_by_id:{file_id}"
+        cached = self._object_cache.get(cache_key)
+        if cached is not None:
+            return cached
         row = self._fetch_one(
             """
             SELECT id, name, path, module_id, summary, language, start_line, end_line
@@ -177,9 +216,15 @@ class GraphRepository:
         )
         if not row:
             return None
-        return File(**row._mapping)
+        file_obj = File(**row._mapping)
+        self._object_cache.set(cache_key, file_obj)
+        return file_obj
 
     def get_symbol_by_id(self, symbol_id: str) -> Symbol | None:
+        cache_key = f"get_symbol_by_id:{symbol_id}"
+        cached = self._object_cache.get(cache_key)
+        if cached is not None:
+            return cached
         row = self._fetch_one(
             """
             SELECT id, name, qualified_name, type, signature, file_id, module_id,
@@ -190,7 +235,9 @@ class GraphRepository:
         )
         if not row:
             return None
-        return Symbol(**row._mapping)
+        symbol = Symbol(**row._mapping)
+        self._object_cache.set(cache_key, symbol)
+        return symbol
 
     def get_relations_by_source(self, source_id: str) -> list[Relation]:
         rows = self._fetch_all(
@@ -431,10 +478,16 @@ class GraphRepository:
                 text(f"UPDATE {table_name} SET summary = :summary WHERE id = :id"),
                 {"id": object_id, "summary": summary},
             )
+        self.clear_cache()
 
     def get_repo_path(self, repo_id: str) -> str | None:
         row = self._fetch_one("SELECT repo_path FROM repos WHERE repo_id = :repo_id", {"repo_id": repo_id})
         return row.repo_path if row else None
+
+    def clear_cache(self) -> None:
+        """Clear cached graph object lookups."""
+
+        self._object_cache.clear()
 
     def _fetch_one(self, sql: str, params: dict[str, object]):
         with self.engine.begin() as connection:

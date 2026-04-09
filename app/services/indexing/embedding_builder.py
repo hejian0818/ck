@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 import math
 from time import perf_counter
 from typing import Any
@@ -41,14 +42,19 @@ class EmbeddingBuilder:
         self.dimension = dimension or settings.VECTOR_DIMENSION
         self._sentence_transformer_model = sentence_transformer_model
         self._openai_client = openai_client
+        self._encode_summary_cached = lru_cache(maxsize=settings.CACHE_EMBEDDING_SIZE)(
+            self._encode_summary_uncached
+        )
 
     def encode_summary(self, summary: str) -> list[float]:
         """Encode a single summary into a normalized vector."""
 
-        vectors = self.encode_summaries([summary])
-        if not vectors:
-            raise ValueError("Unable to encode summary")
-        return vectors[0]
+        return list(self._encode_summary_cached(summary))
+
+    def cache_info(self) -> Any:
+        """Return cache statistics for cached single-summary encoding."""
+
+        return self._encode_summary_cached.cache_info()
 
     def encode_summaries(self, summaries: list[str]) -> list[list[float]]:
         """Encode summaries in batches."""
@@ -64,6 +70,12 @@ class EmbeddingBuilder:
                 raw_vectors = self._encode_openai_batch(batch)
             vectors.extend(self._normalize_vector(vector) for vector in raw_vectors)
         return vectors
+
+    def _encode_summary_uncached(self, summary: str) -> tuple[float, ...]:
+        vectors = self.encode_summaries([summary])
+        if not vectors:
+            raise ValueError("Unable to encode summary")
+        return tuple(vectors[0])
 
     def build_embeddings(self, graphcode: GraphCode) -> list[Embedding]:
         """Build embeddings for all graph objects with summaries."""
