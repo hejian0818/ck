@@ -246,8 +246,46 @@ class GraphRepository:
             """
             SELECT id, name, path, module_id, summary, language, start_line, end_line
             FROM files WHERE module_id = :module_id
+            ORDER BY path ASC
             """,
             {"module_id": module_id},
+        )
+        return [File(**row._mapping) for row in rows]
+
+    def list_modules(self, repo_id: str) -> list[Module]:
+        rows = self._fetch_all(
+            """
+            SELECT id, name, path, summary, metadata
+            FROM modules WHERE repo_id = :repo_id
+            ORDER BY path ASC
+            """,
+            {"repo_id": repo_id},
+        )
+
+        modules: list[Module] = []
+        for row in rows:
+            metadata = row.metadata or {}
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            modules.append(
+                Module(
+                    id=row.id,
+                    name=row.name,
+                    path=row.path,
+                    summary=row.summary,
+                    metadata=metadata,
+                )
+            )
+        return modules
+
+    def list_files(self, repo_id: str) -> list[File]:
+        rows = self._fetch_all(
+            """
+            SELECT id, name, path, module_id, summary, language, start_line, end_line
+            FROM files WHERE repo_id = :repo_id
+            ORDER BY path ASC
+            """,
+            {"repo_id": repo_id},
         )
         return [File(**row._mapping) for row in rows]
 
@@ -257,10 +295,35 @@ class GraphRepository:
             SELECT id, name, qualified_name, type, signature, file_id, module_id,
                    summary, start_line, end_line, visibility, doc
             FROM symbols WHERE file_id = :file_id
+            ORDER BY start_line ASC, qualified_name ASC
             """,
             {"file_id": file_id},
         )
         return [Symbol(**row._mapping) for row in rows]
+
+    def list_symbols_by_module(self, module_id: str) -> list[Symbol]:
+        rows = self._fetch_all(
+            """
+            SELECT id, name, qualified_name, type, signature, file_id, module_id,
+                   summary, start_line, end_line, visibility, doc
+            FROM symbols WHERE module_id = :module_id
+            ORDER BY qualified_name ASC
+            """,
+            {"module_id": module_id},
+        )
+        return [Symbol(**row._mapping) for row in rows]
+
+    def list_relations(self, repo_id: str) -> list[Relation]:
+        rows = self._fetch_all(
+            """
+            SELECT id, relation_type, source_id, target_id, source_type, target_type,
+                   source_module_id, target_module_id, summary
+            FROM relations WHERE repo_id = :repo_id
+            ORDER BY id ASC
+            """,
+            {"repo_id": repo_id},
+        )
+        return [Relation(**row._mapping) for row in rows]
 
     def find_modules_by_name(self, name: str, limit: int = 10) -> list[Module]:
         normalized = name.strip().lower()
