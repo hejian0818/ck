@@ -1,116 +1,151 @@
-# CK
+# CK - Code Knowledge
 
-CK 是一个单代码仓设计文档生成与代码问答系统。Phase 1 目标是跑通 `cleanarch -> graphcode.json -> 索引 -> QA` 的最小闭环。
+代码仓库知识图谱分析与文档生成系统。支持多语言代码解析、知识图谱构建、交互式代码问答和自动设计文档生成。
 
-## Features
+## 功能特性
 
-- 多语言解析适配层，当前可直接解析 Python，Java 和 C/C++ 适配器保留为 mock 接口
-- 生成 `GraphCode` 结构，包含模块、文件、符号、关系、span
-- PostgreSQL schema 与仓库存储层
-- 显式代码片段落锚、基础结构化检索、上下文构造
-- 基础 QA Agent 与 OpenAI-compatible LLM 接口
-- FastAPI API、CLI 脚本、测试仓库与单元测试
+- **多语言代码解析** — Python / Java / C / C++ / JavaScript / Go / Rust（Tree-sitter + Spoon + CDT）
+- **知识图谱构建** — 模块 / 文件 / 符号 / 关系四层索引，稳定 ID 体系
+- **向量语义检索** — pgvector 嵌入索引，sentence-transformers 或 OpenAI 编码
+- **交互式代码问答** — 锚点定位 → 上下文检索 → 多策略路由 → LLM 生成
+- **自动设计文档生成** — 骨架规划 → 段落生成 → PlantUML 图表 → 一致性审查
+- **高级降级模式** — 部分回答、多候选、引导式追问；低置信度标注、段落级降级
+- **可观测性** — 结构化 JSON 日志、指标采集（/metrics API）、请求链路追踪
 
-## Tech Stack
+## 技术栈
 
-- Python 3.11+
-- FastAPI
-- Pydantic v2
-- PostgreSQL + pgvector
-- SQLAlchemy
-- Tree-sitter
-- OpenAI-compatible API
+| 组件 | 技术 |
+|------|------|
+| 语言 | Python 3.11+ |
+| Web 框架 | FastAPI + Uvicorn |
+| 数据校验 | Pydantic v2 |
+| 元数据存储 | PostgreSQL |
+| 向量存储 | pgvector |
+| 代码解析 | Tree-sitter (多语言) |
+| LLM 接口 | OpenAI-compatible (Ollama / vLLM / 国产模型) |
+| 包管理 | uv |
 
-## Installation
+## 快速开始
 
-1. 安装 Python 3.11+。
-2. 安装 `uv`。
-3. 安装并启动 PostgreSQL，创建数据库并启用 `pgvector`。
-4. 在项目根目录执行：
+### 环境准备
 
 ```bash
+# 克隆仓库
+git clone https://github.com/hejian0818/ck.git
+cd ck
+
+# 安装依赖
 uv sync
+
+# 配置环境变量（可选，有默认值）
 cp .env.example .env
+# 编辑 .env 设置 DATABASE_URL, LLM_API_BASE 等
 ```
 
-## Configuration
-
-`.env` 示例：
-
-```env
-DATABASE_URL=postgresql://localhost/ck
-VECTOR_DIMENSION=768
-LOG_LEVEL=INFO
-LOG_FORMAT=json
-LLM_API_BASE=http://localhost:11434/v1
-LLM_API_KEY=dummy
-LLM_MODEL=qwen2.5-coder:7b
-```
-
-## Run
-
-启动 API：
+### 数据库
 
 ```bash
-uv run uvicorn app.main:app --reload
+# 确保 PostgreSQL 已安装并启用 pgvector 扩展
+psql -c "CREATE DATABASE ck;"
+psql -d ck -c "CREATE EXTENSION IF NOT EXISTS vector;"
 ```
 
-构建索引：
+### 运行
 
 ```bash
-uv run python scripts/build_index.py --repo-path data/test_repo --branch main
+# 启动服务
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+# 运行端到端 Demo（无需数据库）
+python3 scripts/demo.py
 ```
 
-运行 Demo：
+### API 接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/repo/scan` | 扫描代码仓库，构建图索引 |
+| POST | `/qa/ask` | 交互式代码问答 |
+| POST | `/doc/plan` | 生成文档骨架 |
+| POST | `/doc/generate` | 生成完整设计文档 |
+| GET | `/doc/{repo_id}/sections` | 获取文档段落列表 |
+| GET | `/metrics` | 获取运行时指标 |
+| POST | `/metrics/reset` | 重置指标 |
+| GET | `/health` | 健康检查 |
+
+## 架构说明
+
+```
+代码仓库 → cleanarch 解析 → graphcode.json
+    ↓
+四层索引（模块/文件/符号/关系）
+    ↓
+向量嵌入（pgvector）+ 图索引
+    ↓
+┌─────────────────────┐
+│ QA Agent            │  锚点定位 → 检索 → 策略路由 → LLM 生成
+│ (交互式问答)        │  4 种策略: S1(默认) S2(增强) S3(推断) S4(降级)
+├─────────────────────┤
+│ Doc Agent           │  骨架规划 → 段落检索 → 段落生成 → PlantUML
+│ (文档生成)          │  一致性审查: 结构/内容/图表三维校验
+└─────────────────────┘
+    ↓
+Memory 系统: Anchor Memory / Retrieval Memory / Focus Memory / Task Memory
+```
+
+## 配置参考
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `DATABASE_URL` | `postgresql://localhost/ck` | 数据库连接 |
+| `VECTOR_DIMENSION` | `768` | 向量维度 |
+| `EMBEDDING_PROVIDER` | `sentence-transformer` | 嵌入提供方 |
+| `EMBEDDING_MODEL` | `BAAI/bge-base-en-v1.5` | 嵌入模型 |
+| `EMBEDDING_BATCH_SIZE` | `32` | 嵌入批量大小 |
+| `LLM_API_BASE` | `http://localhost:11434/v1` | LLM API 地址 |
+| `LLM_MODEL` | `qwen2.5-coder:7b` | LLM 模型 |
+| `LLM_MAX_RETRIES` | `3` | LLM 最大重试次数 |
+| `LLM_TIMEOUT` | `30` | LLM 调用超时（秒） |
+| `DOC_MAX_SECTIONS` | `50` | 文档最大段落数 |
+| `DOC_DIAGRAM_ENABLED` | `True` | 是否生成图表 |
+| `DOC_RETRIEVAL_TOP_K` | `10` | 文档检索 top-k |
+| `CACHE_EMBEDDING_SIZE` | `1000` | 嵌入缓存大小 |
+| `CACHE_GRAPH_TTL` | `60` | 图查询缓存 TTL（秒） |
+| `LOG_LEVEL` | `INFO` | 日志级别 |
+
+所有配置项支持通过环境变量或 `.env` 文件覆盖。
+
+## 开发
+
+### 运行测试
 
 ```bash
-uv run python scripts/run_demo.py
+python3 -m pytest app/tests/ -v
 ```
 
-运行测试：
+### 项目结构
 
-```bash
-python -m unittest discover -s app/tests
+```
+ck/
+  app/
+    api/          # FastAPI 端点 (qa, doc, repo, metrics)
+    core/         # 配置、日志、指标、常量
+    models/       # Pydantic 模型
+    services/
+      cleanarch/  # 多语言代码解析
+      indexing/   # 索引构建、嵌入生成
+      retrieval/  # 检索、排序、图扩展
+      agents/     # QA Agent, Doc Agent, 策略路由
+      context/    # 上下文构建
+      memory/     # 会话记忆管理
+      review/     # 文档审查
+      diagrams/   # PlantUML 生成
+    storage/      # 数据库访问、向量存储
+    tests/        # 单元测试
+  scripts/        # 演示和工具脚本
+  data/           # 数据存储
 ```
 
-## API
+## License
 
-- `POST /repo/build-index`
-- `POST /qa/ask`
-- `GET /qa/session/{session_id}`
-- `POST /qa/session/{session_id}/reset`
-
-启动服务后可访问交互式 API 文档：
-
-- `http://127.0.0.1:8000/docs`
-
-## Example QA Request
-
-```bash
-curl -X POST http://127.0.0.1:8000/qa/ask \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "repo_id": "repo_sample",
-    "session_id": "demo-session",
-    "question": "这个方法做什么？",
-    "selection": {
-      "file_path": "data/test_repo/app_core/services.py",
-      "line_start": 6,
-      "line_end": 7
-    }
-  }'
-```
-
-## Project Structure
-
-```text
-app/
-  api/          FastAPI endpoints
-  core/         config, logging, thresholds
-  models/       graph, anchor, QA models
-  services/     parsing, retrieval, context, agents, memory
-  storage/      PostgreSQL schema and repository layer
-  tests/        unit tests
-scripts/        CLI tools
-data/           test repo and sample graphcode
-```
+MIT
