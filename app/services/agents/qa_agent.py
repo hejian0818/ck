@@ -144,6 +144,7 @@ class QAAgent:
                 selection=selection,
                 anchor=anchor,
                 retrieval_result=execution.retrieval_result,
+                memory_summary=memory.retrieval_memory.recent_evidence_summary,
             )
             answer_text = self.llm_client.generate(context)
             need_more_context = False

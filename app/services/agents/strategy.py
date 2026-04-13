@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import inspect
+from collections import Counter
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
 from app.core import thresholds
 from app.models.anchor import Anchor
+from app.models.graph_objects import File, Module, Symbol
 from app.models.qa_models import RetrievalResult
 from app.services.agents.metrics import Metrics
 
@@ -133,6 +135,19 @@ class StrategyRouter:
                     inferred_result = context.retriever.retrieve(inferred_anchor, context.question)
                 return StrategyExecution(strategy=strategy, retrieval_result=inferred_result)
 
+            inferred_anchor = self._infer_anchor_from_related_objects(context.initial_result.related_objects)
+            if inferred_anchor is not None:
+                retrieve_signature = inspect.signature(context.retriever.retrieve)
+                if "memory" in retrieve_signature.parameters:
+                    inferred_result = context.retriever.retrieve(
+                        inferred_anchor,
+                        context.question,
+                        memory=context.memory,
+                    )
+                else:
+                    inferred_result = context.retriever.retrieve(inferred_anchor, context.question)
+                return StrategyExecution(strategy=strategy, retrieval_result=inferred_result)
+
             return StrategyExecution(
                 strategy=Strategy.S4,
                 retrieval_result=context.initial_result,
@@ -150,3 +165,46 @@ class StrategyRouter:
                 "如果问题范围较大，请拆分为更小的局部问题。",
             ],
         )
+
+    def _infer_anchor_from_related_objects(self, related_objects: list[File | Module | Symbol]) -> Anchor | None:
+        total_objects = len(related_objects)
+        if total_objects == 0:
+            return None
+
+        file_ids: Counter[str] = Counter()
+        module_ids: Counter[str] = Counter()
+        file_paths: dict[str, str] = {}
+
+        for object_ in related_objects:
+            if isinstance(object_, File):
+                file_ids[object_.id] += 1
+                module_ids[object_.module_id] += 1
+                file_paths[object_.id] = object_.path
+            elif isinstance(object_, Module):
+                module_ids[object_.id] += 1
+            elif isinstance(object_, Symbol):
+                file_ids[object_.file_id] += 1
+                module_ids[object_.module_id] += 1
+
+        most_common_file_id, file_count = file_ids.most_common(1)[0] if file_ids else (None, 0)
+        most_common_module_id, module_count = module_ids.most_common(1)[0] if module_ids else (None, 0)
+        file_ratio = file_count / total_objects
+        module_ratio = module_count / total_objects
+
+        if most_common_file_id is not None and file_ratio >= thresholds.RETRIEVAL_CONCENTRATION:
+            return Anchor(
+                level="file",
+                source="retrieval_infer",
+                confidence=0.60,
+                file_id=most_common_file_id,
+                module_id=most_common_module_id,
+                file_path=file_paths.get(most_common_file_id),
+            )
+        if most_common_module_id is not None and module_ratio >= thresholds.RETRIEVAL_CONCENTRATION:
+            return Anchor(
+                level="module",
+                source="retrieval_infer",
+                confidence=0.55,
+                module_id=most_common_module_id,
+            )
+        return None

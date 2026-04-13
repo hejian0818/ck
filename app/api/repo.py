@@ -37,6 +37,13 @@ def build_index(request: RepoBuildRequest) -> RepoBuildResponse:
     return RepoBuildResponse(build_id=graph.repo_meta.repo_id, status="success")
 
 
+@router.post("/scan", response_model=RepoBuildResponse)
+def scan_repo(request: RepoBuildRequest) -> RepoBuildResponse:
+    """Alias for building and persisting a repository index."""
+
+    return build_index(request)
+
+
 @router.get("/{object_type}/{object_id}/summary", response_model=SummaryResponse)
 def get_object_summary(object_type: str, object_id: str) -> SummaryResponse:
     """Fetch a persisted summary for a graph object."""
