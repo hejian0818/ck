@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.core.logging import get_logger
 from app.models.anchor import Anchor
 from app.models.graph_objects import File, Module, Relation, Symbol
 from app.models.qa_models import RetrievalResult
@@ -13,6 +14,7 @@ from app.storage.repositories import GraphRepository
 from app.storage.vector_store import VectorStore
 
 GraphObject = Module | File | Symbol
+logger = get_logger(__name__)
 
 
 class Retriever:
@@ -169,21 +171,28 @@ class Retriever:
         if repo_id is None or self.embedding_builder is None or self.vector_store is None:
             return [], [], {}
 
-        query_vector = self.embedding_builder.encode_summary(question)
-        search_results = []
-        if anchor.level == "symbol":
-            search_results.extend(self.vector_store.search_symbols(repo_id=repo_id, query_vector=query_vector))
-            search_results.extend(self.vector_store.search_files(repo_id=repo_id, query_vector=query_vector))
-        elif anchor.level == "file":
-            search_results.extend(self.vector_store.search_files(repo_id=repo_id, query_vector=query_vector))
-            search_results.extend(self.vector_store.search_symbols(repo_id=repo_id, query_vector=query_vector))
-        elif anchor.level == "module":
-            search_results.extend(self.vector_store.search_modules(repo_id=repo_id, query_vector=query_vector))
-            search_results.extend(self.vector_store.search_files(repo_id=repo_id, query_vector=query_vector))
-        else:
-            search_results.extend(self.vector_store.search_modules(repo_id=repo_id, query_vector=query_vector))
-            search_results.extend(self.vector_store.search_files(repo_id=repo_id, query_vector=query_vector))
-            search_results.extend(self.vector_store.search_symbols(repo_id=repo_id, query_vector=query_vector))
+        try:
+            query_vector = self.embedding_builder.encode_summary(question)
+            search_results = []
+            if anchor.level == "symbol":
+                search_results.extend(self.vector_store.search_symbols(repo_id=repo_id, query_vector=query_vector))
+                search_results.extend(self.vector_store.search_files(repo_id=repo_id, query_vector=query_vector))
+            elif anchor.level == "file":
+                search_results.extend(self.vector_store.search_files(repo_id=repo_id, query_vector=query_vector))
+                search_results.extend(self.vector_store.search_symbols(repo_id=repo_id, query_vector=query_vector))
+            elif anchor.level == "module":
+                search_results.extend(self.vector_store.search_modules(repo_id=repo_id, query_vector=query_vector))
+                search_results.extend(self.vector_store.search_files(repo_id=repo_id, query_vector=query_vector))
+            else:
+                search_results.extend(self.vector_store.search_modules(repo_id=repo_id, query_vector=query_vector))
+                search_results.extend(self.vector_store.search_files(repo_id=repo_id, query_vector=query_vector))
+                search_results.extend(self.vector_store.search_symbols(repo_id=repo_id, query_vector=query_vector))
+        except Exception as exc:
+            logger.warning(
+                "vector_retrieval_failed",
+                extra={"context": {"repo_id": repo_id, "anchor_level": anchor.level, "error": str(exc)}},
+            )
+            return [], [], {}
 
         objects: list[GraphObject] = []
         relations: list[Relation] = []

@@ -4,7 +4,7 @@
 
 ## 功能特性
 
-- **多语言代码解析** — Python / Java / C / C++ / JavaScript / Go / Rust（Tree-sitter + Spoon + CDT）
+- **多语言代码解析** — Python / Java / C / C++ / JavaScript / Go / Rust（Python AST + 轻量解析器 fallback）
 - **知识图谱构建** — 模块 / 文件 / 符号 / 关系四层索引，稳定 ID 体系
 - **向量语义检索** — pgvector 嵌入索引，sentence-transformers 或 OpenAI 编码
 - **交互式代码问答** — 锚点定位 → 上下文检索 → 多策略路由 → LLM 生成
@@ -21,7 +21,7 @@
 | 数据校验 | Pydantic v2 |
 | 元数据存储 | PostgreSQL |
 | 向量存储 | pgvector |
-| 代码解析 | Tree-sitter (多语言) |
+| 代码解析 | Python AST + 轻量多语言解析器 fallback |
 | LLM 接口 | OpenAI-compatible (Ollama / vLLM / 国产模型) |
 | 包管理 | uv |
 
@@ -36,6 +36,9 @@ cd ck
 
 # 安装依赖
 uv sync
+
+# 安装开发/测试依赖
+uv sync --extra dev
 
 # 配置环境变量（可选，有默认值）
 cp .env.example .env
@@ -120,7 +123,7 @@ Memory 系统: Anchor Memory / Retrieval Memory / Focus Memory / Task Memory
 ### 运行测试
 
 ```bash
-python3 -m pytest app/tests/ -v
+uv run python -m pytest app/tests/ -v
 ```
 
 ### 项目结构

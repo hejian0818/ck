@@ -13,12 +13,10 @@ from app.models.qa_models import CodeSelection, QAResponse, RetrievalResult
 from app.services.agents.metrics import Metrics, MetricsCalculator
 from app.services.agents.strategy import Strategy, StrategyExecutionContext, StrategyRouter
 from app.services.context.context_builder import ContextBuilder
-from app.services.indexing.embedding_builder import EmbeddingBuilder
 from app.services.memory.memory_manager import MemoryManager
 from app.services.retrieval.anchor_resolver import AnchorResolver
 from app.services.retrieval.retriever import Retriever
 from app.storage.repositories import GraphRepository
-from app.storage.vector_store import VectorStore
 
 try:
     from openai import OpenAI
@@ -39,14 +37,29 @@ class OpenAICompatibleClient:
     def __init__(self) -> None:
         if OpenAI is None:
             raise RuntimeError("openai package is required for LLM calls")
-        self.client = OpenAI(base_url=settings.LLM_API_BASE, api_key=settings.LLM_API_KEY)
+        self.client = OpenAI(
+            base_url=settings.LLM_API_BASE,
+            api_key=settings.LLM_API_KEY,
+            timeout=settings.LLM_TIMEOUT,
+            max_retries=0,
+        )
 
     def generate(self, prompt: str) -> str:
-        response = self.client.chat.completions.create(
-            model=settings.LLM_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.choices[0].message.content or ""
+        last_error: Exception | None = None
+        for attempt in range(max(1, settings.LLM_MAX_RETRIES)):
+            try:
+                response = self.client.chat.completions.create(
+                    model=settings.LLM_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    timeout=settings.LLM_TIMEOUT,
+                )
+                return response.choices[0].message.content or ""
+            except Exception as exc:  # pragma: no cover - depends on external client behavior
+                last_error = exc
+                if attempt + 1 >= max(1, settings.LLM_MAX_RETRIES):
+                    break
+                time.sleep(min(2 ** attempt, 5))
+        raise RuntimeError(f"LLM generation failed: {last_error}") from last_error
 
 
 class QAAgent:
@@ -66,11 +79,7 @@ class QAAgent:
         self.repository = repository
         self.memory_manager = memory_manager or MemoryManager()
         self.anchor_resolver = anchor_resolver or AnchorResolver(repository)
-        self.retriever = retriever or Retriever(
-            repository,
-            embedding_builder=EmbeddingBuilder(),
-            vector_store=VectorStore(settings.DATABASE_URL),
-        )
+        self.retriever = retriever or Retriever(repository)
         self.context_builder = context_builder or ContextBuilder()
         self.llm_client = llm_client or OpenAICompatibleClient()
         self.metrics_calculator = MetricsCalculator()
@@ -146,8 +155,26 @@ class QAAgent:
                 retrieval_result=execution.retrieval_result,
                 memory_summary=memory.retrieval_memory.recent_evidence_summary,
             )
-            answer_text = self.llm_client.generate(context)
-            need_more_context = False
+            try:
+                answer_text = self.llm_client.generate(context)
+                need_more_context = False
+            except Exception as exc:
+                self.logger.warning(
+                    "qa_llm_generation_failed",
+                    extra={"context": {"session_id": session_id, "error": str(exc)}},
+                )
+                answer_text, suggestions = self._build_degraded_answer(
+                    anchor=anchor,
+                    retrieval_result=execution.retrieval_result,
+                    metrics=final_metrics,
+                    suggestions=[
+                        "LLM 服务当前不可用，可以稍后重试。",
+                        "也可以提供更具体的文件或函数名以获取结构化结果。",
+                    ],
+                )
+                need_more_context = True
+                degraded = True
+                strategy_used = Strategy.S4
 
         used_objects = self._collect_used_objects(execution.retrieval_result)
         recent_subgraph_summary = self._summarize_subgraph(execution.retrieval_result)

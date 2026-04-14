@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from time import perf_counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -15,10 +16,13 @@ from app.models.doc_models import DocumentResult, DocumentSkeleton, SectionConte
 from app.models.graph_objects import File, Module, Relation, Symbol
 from app.services.context.doc_context_builder import DocContextBuilder
 from app.services.diagrams.plantuml_generator import PlantUMLGenerator
-from app.services.indexing.embedding_builder import EmbeddingBuilder
 from app.services.retrieval.doc_retriever import DocRetriever, SectionRetrievalResult
 from app.storage.repositories import GraphRepository
-from app.storage.vector_store import VectorStore
+
+try:
+    from openai import OpenAI
+except ImportError:  # pragma: no cover
+    OpenAI = None
 
 if TYPE_CHECKING:
     from app.services.memory.memory_manager import MemoryManager
@@ -76,6 +80,44 @@ class DeterministicDocLLMClient:
         if section.section_type == "summary":
             return "后续维护应优先关注核心模块边界、关键调用链和跨模块依赖变化。"
         return "以上信息基于当前检索到的代码图谱对象整理。"
+
+
+class OpenAICompatibleDocLLMClient:
+    """OpenAI-compatible client for section generation with deterministic fallback."""
+
+    def __init__(self, fallback_client: DocLLMClient | None = None) -> None:
+        self.fallback_client = fallback_client or DeterministicDocLLMClient()
+        self.client = None
+        if OpenAI is not None:
+            self.client = OpenAI(
+                base_url=settings.LLM_API_BASE,
+                api_key=settings.LLM_API_KEY,
+                timeout=settings.LLM_TIMEOUT,
+                max_retries=0,
+            )
+
+    def generate(self, section: SectionPlan, retrieval: SectionRetrievalResult, prompt: str) -> str:
+        if self.client is None:
+            return self.fallback_client.generate(section, retrieval, prompt)
+
+        last_error: Exception | None = None
+        for attempt in range(max(1, settings.LLM_MAX_RETRIES)):
+            try:
+                response = self.client.chat.completions.create(
+                    model=settings.LLM_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    timeout=settings.LLM_TIMEOUT,
+                )
+                content = response.choices[0].message.content or ""
+                if content.strip():
+                    return content
+                raise RuntimeError("empty section content")
+            except Exception as exc:  # pragma: no cover - depends on external client behavior
+                last_error = exc
+                if attempt + 1 >= max(1, settings.LLM_MAX_RETRIES):
+                    break
+                time.sleep(min(2 ** attempt, 5))
+        return self.fallback_client.generate(section, retrieval, prompt)
 
 
 class SkeletonPlanner:
@@ -237,14 +279,10 @@ class DocAgent:
     ) -> None:
         self.repository = repository
         self.planner = planner or SkeletonPlanner(repository)
-        self.retriever = retriever or DocRetriever(
-            repository,
-            embedding_builder=EmbeddingBuilder(),
-            vector_store=VectorStore(settings.DATABASE_URL),
-        )
+        self.retriever = retriever or DocRetriever(repository)
         self.context_builder = context_builder or DocContextBuilder()
         self.diagram_generator = diagram_generator or PlantUMLGenerator()
-        self.llm_client = llm_client or DeterministicDocLLMClient()
+        self.llm_client = llm_client or OpenAICompatibleDocLLMClient()
         self.memory_manager = memory_manager
         self.reviewer = reviewer
 

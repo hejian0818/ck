@@ -12,6 +12,8 @@ from app.services.cleanarch.parser_adapter import ParseResult, ParserAdapter
 class SpoonAdapter(ParserAdapter):
     """Parse Java symbols and lightweight relations without invoking Spoon."""
 
+    PACKAGE_PATTERN = re.compile(r"(?:^|\n)\s*package\s+([A-Za-z_$][\w$.]*)\s*;", re.MULTILINE)
+
     CLASS_PATTERN = re.compile(
         r"(?:^|(?<=\n)|(?<=[{};]))\s*(?:@\w+(?:\([^)]*\))?\s*)*"
         r"(?:(?:public|private|protected|abstract|static|final|sealed|non-sealed|strictfp)\s+)*"
@@ -34,17 +36,25 @@ class SpoonAdapter(ParserAdapter):
         r"(?P<name>[A-Za-z_$]\w*)\s*(?:=[^;]*)?;",
         re.MULTILINE,
     )
-    CALL_PATTERN = re.compile(r"\b([A-Za-z_$]\w*)\.([A-Za-z_$]\w*)\s*\(")
+    QUALIFIED_CALL_PATTERN = re.compile(r"\b([A-Za-z_$]\w*)\.([A-Za-z_$]\w*)\s*\(")
+    DIRECT_CALL_PATTERN = re.compile(r"\b([A-Za-z_$]\w*)\s*\(")
 
     def parse_file(self, file_path: str) -> ParseResult:
         source = Path(file_path).read_text(encoding="utf-8")
         symbols: list[Symbol] = []
         relations: list[Relation] = []
+        import_aliases = self._parse_import_aliases(source)
+        package_name = self._parse_package_name(source)
 
-        class_infos = self._parse_classes(source, symbols, relations)
+        class_infos = self._parse_classes(source, symbols, relations, package_name)
         self._parse_members(source, class_infos, symbols, relations)
 
-        return ParseResult(symbols=symbols, relations=relations, spans=self._build_spans(file_path, symbols))
+        return ParseResult(
+            symbols=symbols,
+            relations=relations,
+            spans=self._build_spans(file_path, symbols),
+            import_aliases=import_aliases,
+        )
 
     def supports_language(self, language: str) -> bool:
         return language.lower() == "java"
@@ -54,6 +64,7 @@ class SpoonAdapter(ParserAdapter):
         source: str,
         symbols: list[Symbol],
         relations: list[Relation],
+        package_name: str,
     ) -> list[dict[str, object]]:
         class_infos: list[dict[str, object]] = []
         for match in self.CLASS_PATTERN.finditer(source):
@@ -84,9 +95,12 @@ class SpoonAdapter(ParserAdapter):
                 if int(candidate["body_start"]) <= int(info["start"]) <= int(candidate["end"])
             ]
             parent = max(parents, key=lambda item: int(item["start"]), default=None)
-            qualified_name = (
-                f"{parent['qualified_name']}.{info['name']}" if parent and parent["qualified_name"] else str(info["name"])
-            )
+            if parent and parent["qualified_name"]:
+                qualified_name = f"{parent['qualified_name']}.{info['name']}"
+            elif package_name:
+                qualified_name = f"{package_name}.{info['name']}"
+            else:
+                qualified_name = str(info["name"])
             info["qualified_name"] = qualified_name
             symbols.append(
                 self._build_symbol(
@@ -184,9 +198,21 @@ class SpoonAdapter(ParserAdapter):
                 relations.append(self._build_relation("implements", qualified_name, self._clean_type_name(target)))
 
     def _parse_calls(self, body: str, source_id: str, relations: list[Relation]) -> None:
-        for match in self.CALL_PATTERN.finditer(body):
+        seen_targets: set[str] = set()
+        for match in self.QUALIFIED_CALL_PATTERN.finditer(body):
             target = f"{match.group(1)}.{match.group(2)}"
-            relations.append(self._build_relation("calls", source_id, target))
+            if target not in seen_targets:
+                relations.append(self._build_relation("calls", source_id, target))
+                seen_targets.add(target)
+        for match in self.DIRECT_CALL_PATTERN.finditer(body):
+            if match.start(1) > 0 and body[match.start(1) - 1] == ".":
+                continue
+            target = match.group(1)
+            if target in self._JAVA_KEYWORDS:
+                continue
+            if target not in seen_targets:
+                relations.append(self._build_relation("calls", source_id, target))
+                seen_targets.add(target)
 
     @staticmethod
     def _build_symbol(
@@ -281,6 +307,26 @@ class SpoonAdapter(ParserAdapter):
         if tail:
             parts.append(tail)
         return parts
+
+    @staticmethod
+    def _parse_import_aliases(source: str) -> dict[str, str]:
+        aliases: dict[str, str] = {}
+        import_pattern = re.compile(
+            r"(?:^|\n)\s*import\s+(?:(static)\s+)?([A-Za-z_$][\w$.\*]+)\s*;",
+            re.MULTILINE,
+        )
+        for match in import_pattern.finditer(source):
+            imported = match.group(2).strip()
+            if imported.endswith(".*"):
+                continue
+            local_name = imported.split(".")[-1]
+            aliases[local_name] = imported if match.group(1) else local_name
+        return aliases
+
+    @staticmethod
+    def _parse_package_name(source: str) -> str:
+        match = SpoonAdapter.PACKAGE_PATTERN.search(source)
+        return match.group(1).strip() if match else ""
 
     @staticmethod
     def _position_in_ranges(position: int, ranges: list[tuple[int, int]]) -> bool:

@@ -6,7 +6,7 @@ import unittest
 
 from app.models.doc_models import DocumentSkeleton, SectionContent, SectionPlan
 from app.models.graph_objects import File, Module, Relation, Symbol
-from app.services.agents.doc_agent import DocAgent, DeterministicDocLLMClient, SkeletonPlanner
+from app.services.agents.doc_agent import DocAgent, DeterministicDocLLMClient, OpenAICompatibleDocLLMClient, SkeletonPlanner
 from app.services.memory.memory_manager import MemoryManager
 from app.services.retrieval.doc_retriever import DocRetriever
 from app.services.review.doc_reviewer import DocumentReviewer
@@ -295,6 +295,17 @@ class CombinedIntegrationTests(unittest.TestCase):
 
         # All sections generated
         self.assertEqual(len(result.sections), 3)
+
+
+class DocLLMFallbackTests(unittest.TestCase):
+    def test_openai_doc_client_falls_back_without_openai_dependency(self):
+        client = OpenAICompatibleDocLLMClient(fallback_client=DeterministicDocLLMClient())
+        section = _make_skeleton().sections[0]
+        retrieval = DocRetriever(_RepoStub()).retrieve("test-repo", section)
+
+        content = client.generate(section, retrieval, "prompt")
+
+        self.assertIn(section.title, content)
 
 
 if __name__ == "__main__":

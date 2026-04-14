@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 from sqlalchemy import bindparam, create_engine, text
@@ -23,6 +24,7 @@ class VectorStore:
 
     def __init__(self, database_url: str, engine: Engine | None = None) -> None:
         self.engine = engine or create_engine(database_url)
+        self._dialect_name = _resolve_dialect_name(database_url, self.engine)
 
     def save_embeddings(self, embeddings: list[Embedding]) -> None:
         """Persist embeddings using bulk upserts."""
@@ -30,10 +32,15 @@ class VectorStore:
         if not embeddings:
             return
 
+        embedding_value = (
+            "CAST(:embedding AS vector)"
+            if self._dialect_name == "postgresql"
+            else ":embedding"
+        )
         statement = text(
-            """
+            f"""
             INSERT INTO embeddings (repo_id, object_id, object_type, embedding)
-            VALUES (:repo_id, :object_id, :object_type, CAST(:embedding AS vector))
+            VALUES (:repo_id, :object_id, :object_type, {embedding_value})
             ON CONFLICT (repo_id, object_id) DO UPDATE SET
                 object_type = EXCLUDED.object_type,
                 embedding = EXCLUDED.embedding
@@ -100,6 +107,16 @@ class VectorStore:
         if operator is None:
             raise ValueError(f"Unsupported distance metric: {metric}")
 
+        if self._dialect_name == "sqlite":
+            return self._search_similar_sqlite(
+                repo_id=repo_id,
+                query_vector=query_vector,
+                object_type=object_type,
+                top_k=top_k,
+                min_similarity=min_similarity,
+                metric=metric,
+            )
+
         formatted_vector = _format_vector(query_vector)
         distance_expr = f"embedding {operator} CAST(:query_vector AS vector)"
         similarity_expr = _similarity_expression(distance_expr=distance_expr, metric=metric)
@@ -127,6 +144,47 @@ class VectorStore:
         with self.engine.connect() as connection:
             rows = connection.execute(statement, params).fetchall()
         return [SearchResult(**row._mapping) for row in rows]
+
+    def _search_similar_sqlite(
+        self,
+        *,
+        repo_id: str,
+        query_vector: list[float],
+        object_type: str | None,
+        top_k: int,
+        min_similarity: float,
+        metric: str,
+    ) -> list[SearchResult]:
+        filters = ["repo_id = :repo_id"]
+        params: dict[str, Any] = {"repo_id": repo_id}
+        if object_type is not None:
+            filters.append("object_type = :object_type")
+            params["object_type"] = object_type
+
+        statement = text(
+            f"""
+            SELECT object_id, object_type, embedding
+            FROM embeddings
+            WHERE {' AND '.join(filters)}
+            """
+        )
+        with self.engine.connect() as connection:
+            rows = connection.execute(statement, params).fetchall()
+
+        results: list[SearchResult] = []
+        for row in rows:
+            embedding = _parse_vector(row.embedding)
+            similarity = _similarity(query_vector, embedding, metric)
+            if similarity >= min_similarity:
+                results.append(
+                    SearchResult(
+                        object_id=row.object_id,
+                        object_type=row.object_type,
+                        similarity=similarity,
+                    )
+                )
+        results.sort(key=lambda result: result.similarity, reverse=True)
+        return results[:top_k]
 
     def search_modules(
         self,
@@ -217,3 +275,30 @@ def _parse_vector(raw_value: Any) -> list[float]:
     if hasattr(raw_value, "tolist"):
         raw_value = raw_value.tolist()
     return [float(component) for component in raw_value]
+
+
+def _resolve_dialect_name(database_url: str, engine: Engine) -> str:
+    dialect_name = getattr(getattr(engine, "dialect", None), "name", None)
+    if isinstance(dialect_name, str):
+        return dialect_name
+    return database_url.split(":", 1)[0]
+
+
+def _similarity(left: list[float], right: list[float], metric: str) -> float:
+    if metric == "cosine":
+        return _cosine_similarity(left, right)
+    if metric == "l2":
+        distance = math.sqrt(sum((a - b) ** 2 for a, b in zip(left, right, strict=False)))
+        return 1 / (1 + distance)
+    if metric == "inner_product":
+        return sum(a * b for a, b in zip(left, right, strict=False))
+    raise ValueError(f"Unsupported distance metric: {metric}")
+
+
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    dot = sum(a * b for a, b in zip(left, right, strict=False))
+    left_norm = math.sqrt(sum(component * component for component in left))
+    right_norm = math.sqrt(sum(component * component for component in right))
+    if left_norm == 0 or right_norm == 0:
+        return 0.0
+    return dot / (left_norm * right_norm)

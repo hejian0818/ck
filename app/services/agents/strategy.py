@@ -74,6 +74,14 @@ class StrategyRouter:
     def should_degrade(self, metrics: Metrics) -> bool:
         """Return whether the metrics require strategy degradation."""
 
+        if (
+            metrics.A >= thresholds.ANCHOR_CONFIDENCE_STRONG
+            and metrics.C >= thresholds.RETRIEVAL_CONCENTRATION
+            and metrics.E >= thresholds.EVIDENCE_SUFFICIENT
+            and metrics.G >= thresholds.EXPANSION_GAIN
+        ):
+            return False
+
         return any(
             (
                 metrics.A < thresholds.ANCHOR_CONFIDENCE_DEGRADE,

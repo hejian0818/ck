@@ -136,20 +136,16 @@ def main() -> None:
     qa_agent = QAAgent(
         repository=repository,
         memory_manager=memory_manager,
-        retriever=Retriever(
-            repository,
-            embedding_builder=embedding_builder,
-            vector_store=vector_store,
-        ),
+        retriever=Retriever(repository),
         llm_client=_DemoLLMClient(),
     )
     qa_response = qa_agent.answer(
         repo_id=graph.repo_meta.repo_id,
         question="GreetingService.greet 做什么？",
         selection=CodeSelection(
-            file_path="data/test_repo/app_core/services.py",
-            line_start=6,
-            line_end=7,
+            file_path="app_core/services.py",
+            line_start=9,
+            line_end=10,
         ),
         session_id="demo-session",
     )

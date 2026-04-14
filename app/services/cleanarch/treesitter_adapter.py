@@ -18,6 +18,7 @@ class _PythonSymbolVisitor(ast.NodeVisitor):
         self.scope_stack: list[str] = []
         self.symbols: list[Symbol] = []
         self.relations: list[Relation] = []
+        self.import_aliases: dict[str, str] = {}
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         qualified_name = ".".join([*self.scope_stack, node.name]) if self.scope_stack else node.name
@@ -39,6 +40,20 @@ class _PythonSymbolVisitor(ast.NodeVisitor):
         self.scope_stack.append(node.name)
         self.generic_visit(node)
         self.scope_stack.pop()
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            local_name = alias.asname or alias.name.split(".")[-1]
+            self.import_aliases[local_name] = alias.name
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        module_ref = self._python_module_reference(node.module, node.level)
+        for alias in node.names:
+            if alias.name == "*":
+                continue
+            local_name = alias.asname or alias.name
+            imported_name = alias.name.split(".")[-1]
+            self.import_aliases[local_name] = f"{module_ref}.{imported_name}" if module_ref else imported_name
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_function_like(node)
@@ -104,6 +119,19 @@ class _PythonSymbolVisitor(ast.NodeVisitor):
                 return ".".join(reversed(parts))
         return None
 
+    def _python_module_reference(self, module_name: str | None, level: int) -> str:
+        module_parts = [part for part in (module_name or "").split(".") if part]
+        if level <= 0:
+            return ".".join(module_parts)
+
+        source_path = Path(self.file_path)
+        anchor = source_path.parent
+        for _ in range(max(level - 1, 0)):
+            anchor = anchor.parent
+        if module_parts:
+            return ".".join(module_parts)
+        return anchor.name
+
 
 class TreeSitterAdapter(ParserAdapter):
     """Parse Python, JavaScript, Go, and Rust sources."""
@@ -157,13 +185,19 @@ class TreeSitterAdapter(ParserAdapter):
             for symbol in visitor.symbols
         ]
 
-        return ParseResult(symbols=visitor.symbols, relations=visitor.relations, spans=spans)
+        return ParseResult(
+            symbols=visitor.symbols,
+            relations=visitor.relations,
+            spans=spans,
+            import_aliases=visitor.import_aliases,
+        )
 
     def _parse_javascript(self, file_path: str) -> ParseResult:
         source = Path(file_path).read_text(encoding="utf-8")
         symbols: list[Symbol] = []
         relations: list[Relation] = []
         class_ranges: list[tuple[int, int]] = []
+        callable_ranges: list[tuple[str, int, int]] = []
 
         class_pattern = re.compile(
             r"(?:^|\n)\s*(?:export\s+default\s+|export\s+)?class\s+([A-Za-z_$][\w$]*)[^{]*\{",
@@ -186,7 +220,7 @@ class TreeSitterAdapter(ParserAdapter):
                 )
             )
             if self._is_exported_prefix(match.group(0)):
-                relations.append(self._build_export_relation(name))
+                relations.append(self._build_export_relation(name, exported_as=self._export_name(match.group(0), name)))
 
             body_start = match.end()
             body_end = end_pos if end_pos is not None else match.end()
@@ -217,6 +251,7 @@ class TreeSitterAdapter(ParserAdapter):
                         visibility="private" if method_match.group(1).startswith("#") else "public",
                     )
                 )
+                callable_ranges.append((f"{name}.{method_name}", method_match.end(), method_end_pos or method_match.end()))
 
         function_pattern = re.compile(
             r"(?:^|\n)\s*(?:export\s+default\s+|export\s+)?(?:async\s+)?function\s+"
@@ -241,7 +276,8 @@ class TreeSitterAdapter(ParserAdapter):
                 )
             )
             if self._is_exported_prefix(match.group(0)):
-                relations.append(self._build_export_relation(name))
+                relations.append(self._build_export_relation(name, exported_as=self._export_name(match.group(0), name)))
+            callable_ranges.append((name, match.end(), end_pos or match.end()))
 
         arrow_pattern = re.compile(
             r"(?:^|\n)\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*"
@@ -270,14 +306,26 @@ class TreeSitterAdapter(ParserAdapter):
                 )
             )
             if self._is_exported_prefix(match.group(0)):
-                relations.append(self._build_export_relation(name))
+                relations.append(self._build_export_relation(name, exported_as=self._export_name(match.group(0), name)))
+            if match.group(4):
+                callable_ranges.append((name, match.end(), end_pos or match.end()))
 
+        import_aliases = self._parse_javascript_import_aliases(source, file_path)
         relations.extend(self._parse_named_exports(source, {symbol.name: symbol.qualified_name for symbol in symbols}))
-        return ParseResult(symbols=symbols, relations=relations, spans=self._build_spans(file_path, symbols))
+        relations.extend(self._parse_body_calls(source, callable_ranges, self._javascript_call_targets))
+        return ParseResult(
+            symbols=symbols,
+            relations=relations,
+            spans=self._build_spans(file_path, symbols),
+            import_aliases=import_aliases,
+        )
 
     def _parse_go(self, file_path: str) -> ParseResult:
         source = Path(file_path).read_text(encoding="utf-8")
         symbols: list[Symbol] = []
+        relations: list[Relation] = []
+        callable_ranges: list[tuple[str, int, int]] = []
+        package_name = self._parse_go_package_name(source)
 
         struct_pattern = re.compile(r"(?:^|\n)\s*type\s+([A-Za-z_]\w*)\s+struct\s*\{", re.MULTILINE)
         for match in struct_pattern.finditer(source):
@@ -285,10 +333,11 @@ class TreeSitterAdapter(ParserAdapter):
             start_line = self._line_number(source, match.start(1))
             end_pos = self._find_matching_brace(source, match.end() - 1)
             end_line = self._line_number(source, end_pos) if end_pos is not None else start_line
+            qualified_name = self._scoped_name(package_name, name)
             symbols.append(
                 self._build_symbol(
                     name=name,
-                    qualified_name=name,
+                    qualified_name=qualified_name,
                     symbol_type="struct",
                     signature=self._signature_from_match(source, match),
                     start_line=start_line,
@@ -305,7 +354,8 @@ class TreeSitterAdapter(ParserAdapter):
             receiver = self._receiver_type(match.group(1) or "")
             name = match.group(2)
             symbol_type = "method" if receiver else "function"
-            qualified_name = f"{receiver}.{name}" if receiver else name
+            scoped_receiver = self._scoped_name(package_name, receiver) if receiver else ""
+            qualified_name = f"{scoped_receiver}.{name}" if scoped_receiver else self._scoped_name(package_name, name)
             start_line = self._line_number(source, match.start(2))
             end_pos = self._find_matching_brace(source, match.end() - 1)
             end_line = self._line_number(source, end_pos) if end_pos is not None else start_line
@@ -320,13 +370,22 @@ class TreeSitterAdapter(ParserAdapter):
                     visibility="public" if name[:1].isupper() else "private",
                 )
             )
+            callable_ranges.append((qualified_name, match.end(), end_pos or match.end()))
 
-        return ParseResult(symbols=symbols, spans=self._build_spans(file_path, symbols))
+        relations.extend(self._parse_body_calls(source, callable_ranges, self._go_call_targets))
+        return ParseResult(
+            symbols=symbols,
+            relations=relations,
+            spans=self._build_spans(file_path, symbols),
+            import_aliases=self._parse_go_import_aliases(source),
+        )
 
     def _parse_rust(self, file_path: str) -> ParseResult:
         source = Path(file_path).read_text(encoding="utf-8")
         symbols: list[Symbol] = []
+        relations: list[Relation] = []
         impl_ranges: list[tuple[int, int, str]] = []
+        callable_ranges: list[tuple[str, int, int]] = []
 
         struct_pattern = re.compile(r"(?:^|\n)\s*(?:pub\s+)?struct\s+([A-Za-z_]\w*)\b[^{;]*(\{|;)", re.MULTILINE)
         for match in struct_pattern.finditer(source):
@@ -355,7 +414,7 @@ class TreeSitterAdapter(ParserAdapter):
             impl_ranges.append((match.start(), end_pos if end_pos is not None else match.end(), match.group(1)))
 
         fn_pattern = re.compile(
-            r"(?:^|\n)\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)\s*"
+            r"(?:^|(?<=\n)|(?<=[{;]))\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)\s*"
             r"(?:<[^>]+>)?\s*\(([^)]*)\)[^{;]*\{",
             re.MULTILINE,
         )
@@ -378,8 +437,15 @@ class TreeSitterAdapter(ParserAdapter):
                     visibility="public" if match.group(0).lstrip().startswith("pub") else "private",
                 )
             )
+            callable_ranges.append((qualified_name, match.end(), end_pos or match.end()))
 
-        return ParseResult(symbols=symbols, spans=self._build_spans(file_path, symbols))
+        relations.extend(self._parse_body_calls(source, callable_ranges, self._rust_call_targets))
+        return ParseResult(
+            symbols=symbols,
+            relations=relations,
+            spans=self._build_spans(file_path, symbols),
+            import_aliases=self._parse_rust_import_aliases(source),
+        )
 
     @staticmethod
     def _build_symbol(
@@ -422,12 +488,12 @@ class TreeSitterAdapter(ParserAdapter):
         ]
 
     @staticmethod
-    def _build_export_relation(qualified_name: str) -> Relation:
+    def _build_export_relation(qualified_name: str, exported_as: str | None = None) -> Relation:
         return Relation(
             id="",
             relation_type="exports",
             source_id=qualified_name,
-            target_id=f"export:{qualified_name}",
+            target_id=f"export:{exported_as or qualified_name}",
             source_type="symbol",
             target_type="external",
             source_module_id="",
@@ -461,6 +527,10 @@ class TreeSitterAdapter(ParserAdapter):
     def _is_exported_prefix(text: str) -> bool:
         return bool(re.search(r"(^|\n)\s*export\b", text))
 
+    @staticmethod
+    def _export_name(text: str, qualified_name: str) -> str:
+        return "default" if re.search(r"(^|\n)\s*export\s+default\b", text) else qualified_name
+
     def _parse_named_exports(self, source: str, symbol_names: dict[str, str]) -> list[Relation]:
         relations: list[Relation] = []
         export_pattern = re.compile(r"(?:^|\n)\s*export\s*\{([^}]+)\}", re.MULTILINE)
@@ -473,11 +543,189 @@ class TreeSitterAdapter(ParserAdapter):
         return relations
 
     @staticmethod
+    def _parse_javascript_import_aliases(source: str, file_path: str) -> dict[str, str]:
+        aliases: dict[str, str] = {}
+        import_pattern = re.compile(r"(?:^|\n)\s*import\s+(.+?)\s+from\s+['\"]([^'\"]+)['\"]", re.MULTILINE)
+        for match in import_pattern.finditer(source):
+            clause = match.group(1).strip()
+            module_ref = TreeSitterAdapter._module_reference(file_path, match.group(2).strip())
+            default_import, remainder = TreeSitterAdapter._split_javascript_import_clause(clause)
+            if default_import:
+                aliases[default_import] = f"{module_ref}.default" if module_ref else default_import
+            if remainder.startswith("{") and remainder.endswith("}"):
+                for item in remainder.strip("{} ").split(","):
+                    item = item.strip()
+                    if not item:
+                        continue
+                    imported, _, local = item.partition(" as ")
+                    imported_name = imported.strip().split(".")[-1]
+                    aliases[(local or imported).strip()] = (
+                        f"{module_ref}.{imported_name}" if module_ref else imported_name
+                    )
+            elif remainder.startswith("* as "):
+                alias = remainder.replace("* as ", "", 1).strip()
+                aliases[alias] = module_ref or alias
+        return aliases
+
+    @staticmethod
+    def _split_javascript_import_clause(clause: str) -> tuple[str | None, str]:
+        if clause.startswith("{") or clause.startswith("* as "):
+            return None, clause
+        if "," not in clause:
+            return clause.strip(), ""
+        default_import, remainder = clause.split(",", 1)
+        return default_import.strip(), remainder.strip()
+
+    @staticmethod
+    def _parse_go_import_aliases(source: str) -> dict[str, str]:
+        aliases: dict[str, str] = {}
+        block_pattern = re.compile(r"(?:^|\n)\s*import\s*\((.*?)\)", re.MULTILINE | re.DOTALL)
+        single_pattern = re.compile(r"(?:^|\n)\s*import\s+([A-Za-z_]\w*)?\s*\"([^\"]+)\"", re.MULTILINE)
+        for match in block_pattern.finditer(source):
+            for line in match.group(1).splitlines():
+                line = line.strip()
+                if not line or line.startswith("//"):
+                    continue
+                alias_match = re.match(r'([A-Za-z_]\w*)?\s*"([^"]+)"', line)
+                if not alias_match:
+                    continue
+                alias = alias_match.group(1) or alias_match.group(2).split("/")[-1]
+                aliases[alias] = alias_match.group(2).split("/")[-1]
+        for match in single_pattern.finditer(source):
+            alias = match.group(1) or match.group(2).split("/")[-1]
+            aliases[alias] = match.group(2).split("/")[-1]
+        return aliases
+
+    @staticmethod
+    def _parse_go_package_name(source: str) -> str:
+        match = re.search(r"(?:^|\n)\s*package\s+([A-Za-z_]\w*)\b", source, re.MULTILINE)
+        return match.group(1) if match else ""
+
+    @staticmethod
+    def _parse_rust_import_aliases(source: str) -> dict[str, str]:
+        aliases: dict[str, str] = {}
+        use_pattern = re.compile(r"(?:^|\n)\s*use\s+([^;]+);", re.MULTILINE)
+        for match in use_pattern.finditer(source):
+            statement = match.group(1).strip()
+            if "{" in statement and "}" in statement:
+                prefix, _, rest = statement.partition("{")
+                prefix = prefix.rstrip(":").strip()
+                for item in rest.rstrip("}").split(","):
+                    item = item.strip()
+                    if not item:
+                        continue
+                    imported, _, local = item.partition(" as ")
+                    imported_path = f"{prefix}::{imported.strip()}" if prefix else imported.strip()
+                    leaf = imported_path.split("::")[-1].strip()
+                    aliases[(local or leaf).strip()] = TreeSitterAdapter._normalize_rust_import_path(imported_path)
+                continue
+            imported, _, local = statement.partition(" as ")
+            imported_path = imported.strip()
+            leaf = imported_path.split("::")[-1].strip()
+            aliases[(local or leaf).strip()] = TreeSitterAdapter._normalize_rust_import_path(imported_path)
+        return aliases
+
+    @staticmethod
+    def _normalize_rust_import_path(imported_path: str) -> str:
+        normalized = imported_path.strip()
+        for prefix in ("crate::", "self::", "super::"):
+            if normalized.startswith(prefix):
+                return normalized[len(prefix) :]
+        return normalized
+
+    @staticmethod
+    def _module_reference(file_path: str, import_path: str) -> str:
+        if not import_path.startswith("."):
+            return import_path.split("/")[-1]
+
+        source_path = Path(file_path)
+        module_path = (source_path.parent / import_path).resolve()
+        if module_path.suffix:
+            return module_path.stem
+        return module_path.name
+
+    def _parse_body_calls(
+        self,
+        source: str,
+        callable_ranges: list[tuple[str, int, int]],
+        target_builder: object,
+    ) -> list[Relation]:
+        relations: list[Relation] = []
+        for source_id, body_start, body_end in callable_ranges:
+            body = source[body_start:body_end]
+            for target_id in target_builder(body):
+                if not target_id or target_id == source_id:
+                    continue
+                relations.append(
+                    Relation(
+                        id="",
+                        relation_type="calls",
+                        source_id=source_id,
+                        target_id=target_id,
+                        source_type="symbol",
+                        target_type="symbol",
+                        source_module_id="",
+                        target_module_id="",
+                    )
+                )
+        return relations
+
+    @staticmethod
+    def _javascript_call_targets(body: str) -> list[str]:
+        call_pattern = re.compile(r"\b([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\s*\(")
+        keywords = {"if", "for", "while", "switch", "catch", "function", "return", "typeof", "new"}
+        targets: list[str] = []
+        for match in call_pattern.finditer(body):
+            target = match.group(1)
+            short_name = target.split(".")[-1]
+            if short_name in keywords:
+                continue
+            targets.append(target)
+        return targets
+
+    @staticmethod
+    def _go_call_targets(body: str) -> list[str]:
+        call_pattern = re.compile(r"\b([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\s*\(")
+        keywords = {"if", "for", "switch", "return", "func", "make", "new", "defer", "go"}
+        targets: list[str] = []
+        for match in call_pattern.finditer(body):
+            target = match.group(1)
+            short_name = target.split(".")[-1]
+            if short_name in keywords:
+                continue
+            targets.append(target)
+        return targets
+
+    @staticmethod
+    def _rust_call_targets(body: str) -> list[str]:
+        call_pattern = re.compile(r"\b([A-Za-z_]\w*(?:(?:::|\.))[A-Za-z_]\w*|[A-Za-z_]\w*)\s*!\s*?\(|\b([A-Za-z_]\w*(?:(?:::|\.))[A-Za-z_]\w*|[A-Za-z_]\w*)\s*\(")
+        keywords = {"if", "for", "while", "loop", "match", "return", "Some", "Ok", "Err"}
+        targets: list[str] = []
+        for match in call_pattern.finditer(body):
+            target = match.group(1) or match.group(2) or ""
+            target = target.rstrip("!")
+            short_name = re.split(r"::|\.", target)[-1]
+            if short_name in keywords:
+                continue
+            targets.append(target)
+        return targets
+
+    @staticmethod
     def _receiver_type(receiver: str) -> str:
         parts = receiver.strip().split()
         if not parts:
             return ""
         return parts[-1].lstrip("*")
+
+    @staticmethod
+    def _scoped_name(scope: str, name: str) -> str:
+        if not scope:
+            return name
+        if not name:
+            return scope
+        if name.startswith(f"{scope}."):
+            return name
+        return f"{scope}.{name}"
 
     @staticmethod
     def _find_matching_brace(source: str, open_brace_index: int) -> int | None:

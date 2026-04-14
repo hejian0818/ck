@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from app.api.dependencies import get_graph_repository
+from app.api.errors import handle_api_error, validate_repo_path
 from app.core.config import settings
 from app.models.qa_models import RepoBuildRequest, RepoBuildResponse, SummaryResponse
 from app.services.cleanarch.graph_builder import GraphBuilder
@@ -19,6 +20,7 @@ def build_index(request: RepoBuildRequest) -> RepoBuildResponse:
     """Build and persist a repository index."""
 
     try:
+        repo_path = validate_repo_path(request.repo_path)
         repository = get_graph_repository()
         repository.initialize_schema()
         graph_builder = GraphBuilder()
@@ -29,10 +31,10 @@ def build_index(request: RepoBuildRequest) -> RepoBuildResponse:
                 vector_store=VectorStore(settings.DATABASE_URL),
             )
 
-        graph = graph_builder.build_graph(repo_path=request.repo_path, branch=request.branch)
+        graph = graph_builder.build_graph(repo_path=repo_path, branch=request.branch)
         repository.save_graphcode(graph)
     except Exception as exc:  # pragma: no cover
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        handle_api_error(exc)
 
     return RepoBuildResponse(build_id=graph.repo_meta.repo_id, status="success")
 

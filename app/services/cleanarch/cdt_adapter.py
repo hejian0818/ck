@@ -27,7 +27,8 @@ class CDTAdapter(ParserAdapter):
         r"\s*(?:const\s*)?(?:noexcept\s*)?(?:override\s*)?(?:final\s*)?(?:->\s*[^{;]+)?\{",
         re.MULTILINE,
     )
-    CALL_PATTERN = re.compile(r"\b([A-Za-z_]\w*(?:(?:\.|->|::)[A-Za-z_]\w*)?)\s*\(")
+    QUALIFIED_CALL_PATTERN = re.compile(r"\b([A-Za-z_]\w*(?:(?:\.|->|::)[A-Za-z_]\w*)+)\s*\(")
+    DIRECT_CALL_PATTERN = re.compile(r"\b([A-Za-z_~]\w*)\s*\(")
 
     def parse_file(self, file_path: str) -> ParseResult:
         source = Path(file_path).read_text(encoding="utf-8")
@@ -39,7 +40,11 @@ class CDTAdapter(ParserAdapter):
         self._parse_includes(file_path, source, relations)
         self._parse_functions(source, namespace_infos, class_infos, symbols, relations)
 
-        return ParseResult(symbols=symbols, relations=relations, spans=self._build_spans(file_path, symbols))
+        return ParseResult(
+            symbols=symbols,
+            relations=relations,
+            spans=self._build_spans(file_path, symbols),
+        )
 
     def supports_language(self, language: str) -> bool:
         return language.lower() in {"c", "c++", "cpp"}
@@ -194,12 +199,25 @@ class CDTAdapter(ParserAdapter):
             self._parse_calls(source[match.end() : body_end], qualified_name, relations)
 
     def _parse_calls(self, body: str, source_id: str, relations: list[Relation]) -> None:
-        for match in self.CALL_PATTERN.finditer(body):
+        seen_targets: set[str] = set()
+        for match in self.QUALIFIED_CALL_PATTERN.finditer(body):
             target = match.group(1).replace("->", "::").replace(".", "::")
             short_target = target.split("::")[-1]
             if short_target in self._C_CPP_KEYWORDS:
                 continue
-            relations.append(self._build_relation("calls", source_id, target))
+            if target not in seen_targets:
+                relations.append(self._build_relation("calls", source_id, target))
+                seen_targets.add(target)
+        for match in self.DIRECT_CALL_PATTERN.finditer(body):
+            prefix = body[max(0, match.start(1) - 2) : match.start(1)]
+            if prefix.endswith(("::", "->")) or prefix.endswith("."):
+                continue
+            target = match.group(1)
+            if target in self._C_CPP_KEYWORDS:
+                continue
+            if target not in seen_targets:
+                relations.append(self._build_relation("calls", source_id, target))
+                seen_targets.add(target)
 
     @staticmethod
     def _build_symbol(

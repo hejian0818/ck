@@ -134,6 +134,12 @@ class _LLMStub:
         return f"stubbed answer for: {prompt.splitlines()[0]}"
 
 
+class _FailingLLMStub:
+    def generate(self, prompt: str) -> str:
+        _ = prompt
+        raise RuntimeError("llm unavailable")
+
+
 class _EmbeddingBuilderStub:
     def encode_summary(self, summary: str) -> list[float]:
         return [0.1, 0.9]
@@ -257,6 +263,28 @@ class QAAgentTests(unittest.TestCase):
         self.assertEqual(response.anchor.source, "name_match")
         self.assertFalse(response.degraded)
         self.assertIn("S_app_core.GreetingService.greet", response.used_objects)
+
+    def test_answer_degrades_when_llm_generation_fails(self) -> None:
+        response = QAAgent(
+            repository=_RepoStub(),
+            memory_manager=MemoryManager(),
+            llm_client=_FailingLLMStub(),
+            retriever=Retriever(_RepoStub()),
+        ).answer(
+            repo_id="repo_sample",
+            question="这个方法做什么？",
+            selection=CodeSelection(
+                file_path="data/test_repo/app_core/services.py",
+                line_start=6,
+                line_end=7,
+            ),
+            session_id="session-llm-failed",
+        )
+
+        self.assertTrue(response.degraded)
+        self.assertEqual(response.strategy_used, "S4")
+        self.assertTrue(response.need_more_context)
+        self.assertTrue(response.suggestions)
 
 
 class QAApiTests(unittest.TestCase):
