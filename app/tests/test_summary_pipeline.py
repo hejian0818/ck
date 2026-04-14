@@ -1,4 +1,4 @@
-"""Summary pipeline integration tests."""
+"""Summary pipeline and repo API integration tests."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.main import app
 from app.models.graph_objects import GraphCode
+from app.models.qa_models import RepoBuildResponse
 from app.services.cleanarch.graph_builder import GraphBuilder
 from app.storage.repositories import GraphRepository
 
@@ -71,6 +72,26 @@ class SummaryPipelineTests(unittest.TestCase):
         self.assertEqual(payload["object_type"], "module")
         self.assertEqual(payload["object_id"], module.id)
         self.assertEqual(json.loads(payload["summary"])["module_path"], module.path)
+
+    def test_scan_api_builds_and_persists_repository_index(self) -> None:
+        repository = self._build_repository()
+        repo_path = str(Path("data/test_repo").resolve())
+
+        with patch("app.api.repo.get_graph_repository", return_value=repository):
+            client = TestClient(app)
+            response = client.post("/repo/scan", json={"repo_path": repo_path, "branch": "main"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = RepoBuildResponse.model_validate(response.json())
+        self.assertEqual(payload.status, "success")
+        self.assertTrue(payload.build_id)
+        self.assertTrue(repository.list_modules(payload.build_id))
+
+    def test_scan_api_rejects_missing_repository_path(self) -> None:
+        client = TestClient(app)
+        response = client.post("/repo/scan", json={"branch": "main"})
+
+        self.assertEqual(response.status_code, 422)
 
 
 if __name__ == "__main__":

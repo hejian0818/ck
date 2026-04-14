@@ -1,12 +1,18 @@
-"""QA agent tests."""
+"""QA agent and API tests."""
 
 from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.models.anchor import Anchor
 from app.models.graph_objects import File, Module, Relation, Span, Symbol
 from app.models.qa_models import CodeSelection
+from app.services.agents.metrics import Metrics
 from app.services.agents.qa_agent import QAAgent
 from app.services.memory.memory_manager import MemoryManager
 from app.services.retrieval.retriever import Retriever
@@ -147,6 +153,22 @@ class _VectorStoreStub:
         return []
 
 
+class _QAAgentStub:
+    def answer(self, repo_id: str, question: str, selection: CodeSelection | None, session_id: str):
+        _ = (repo_id, question, selection, session_id)
+        return SimpleNamespace(
+            answer="stubbed api answer",
+            anchor=Anchor(level="symbol", source="explicit_span", confidence=0.95, symbol_id="S_demo"),
+            confidence=0.95,
+            used_objects=["S_demo"],
+            need_more_context=False,
+            strategy_used="S1",
+            metrics=Metrics(A=0.95, C=0.9, E=0.8, G=0.7, R=0.9),
+            degraded=False,
+            suggestions=[],
+        )
+
+
 class QAAgentTests(unittest.TestCase):
     def test_answer_returns_anchor_and_used_objects(self) -> None:
         agent = QAAgent(
@@ -235,6 +257,59 @@ class QAAgentTests(unittest.TestCase):
         self.assertEqual(response.anchor.source, "name_match")
         self.assertFalse(response.degraded)
         self.assertIn("S_app_core.GreetingService.greet", response.used_objects)
+
+
+class QAApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from app.api.dependencies import memory_manager
+
+        self.memory_manager = memory_manager
+        self.memory_manager.clear_memory("api-session")
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        self.memory_manager.clear_memory("api-session")
+
+    def test_ask_endpoint_returns_agent_payload(self) -> None:
+        with patch("app.api.qa.QAAgent", return_value=_QAAgentStub()):
+            response = self.client.post(
+                "/qa/ask",
+                json={
+                    "repo_id": "repo_sample",
+                    "session_id": "api-session",
+                    "question": "这个函数做什么？",
+                    "selection": {
+                        "file_path": "data/test_repo/app_core/services.py",
+                        "line_start": 6,
+                        "line_end": 7,
+                    },
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["answer"], "stubbed api answer")
+        self.assertEqual(payload["anchor"]["level"], "symbol")
+        self.assertEqual(payload["strategy_used"], "S1")
+        self.assertFalse(payload["degraded"])
+
+    def test_session_endpoints_return_and_reset_memory_state(self) -> None:
+        self.memory_manager.update_anchor_memory(
+            "api-session",
+            Anchor(level="file", source="memory_inherit", confidence=0.7, file_id="F_demo", module_id="M_demo"),
+        )
+
+        response = self.client.get("/qa/session/api-session")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["current_anchor"]["file_id"], "F_demo")
+
+        reset_response = self.client.post("/qa/session/api-session/reset")
+        self.assertEqual(reset_response.status_code, 200)
+        self.assertIsNone(reset_response.json()["current_anchor"])
+
+        after_reset_response = self.client.get("/qa/session/api-session")
+        self.assertEqual(after_reset_response.status_code, 200)
+        self.assertIsNone(after_reset_response.json()["current_anchor"])
 
 
 if __name__ == "__main__":
