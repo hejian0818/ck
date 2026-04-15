@@ -1,10 +1,13 @@
-"""MetricsCollector tests."""
+"""MetricsCollector and metrics API tests."""
 
 from __future__ import annotations
 
 import unittest
 
-from app.core.metrics import MetricsCollector
+from fastapi.testclient import TestClient
+
+from app.core.metrics import MetricsCollector, metrics
+from app.main import app
 
 
 class MetricsCollectorTests(unittest.TestCase):
@@ -49,6 +52,35 @@ class MetricsCollectorTests(unittest.TestCase):
         self.collector.reset()
         self.assertEqual(self.collector.get_counter("x"), 0)
         self.assertEqual(self.collector.get_histogram_stats("y")["count"], 0)
+
+
+class MetricsApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        metrics.reset()
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        metrics.reset()
+
+    def test_metrics_endpoints_snapshot_and_reset(self) -> None:
+        metrics.increment("qa.requests", 2)
+        metrics.observe("qa.latency_ms", 12.0)
+        metrics.observe("qa.latency_ms", 20.0)
+
+        response = self.client.get("/metrics")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["counters"]["qa.requests"], 2)
+        self.assertEqual(payload["histograms"]["qa.latency_ms"]["count"], 2)
+
+        reset_response = self.client.post("/metrics/reset")
+        self.assertEqual(reset_response.status_code, 200)
+        self.assertEqual(reset_response.json()["status"], "ok")
+
+        after_reset = self.client.get("/metrics")
+        self.assertEqual(after_reset.status_code, 200)
+        self.assertEqual(after_reset.json()["counters"], {})
+        self.assertEqual(after_reset.json()["histograms"], {})
 
 
 if __name__ == "__main__":

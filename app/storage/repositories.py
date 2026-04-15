@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from app.core.config import settings
-from app.models.graph_objects import File, GraphCode, Module, Relation, Span, Symbol
+from app.models.graph_objects import File, GraphCode, Module, Relation, RepoMeta, Span, Symbol
 
 
 class _TTLCache:
@@ -65,6 +65,11 @@ class GraphRepository:
     def save_graphcode(self, graphcode: GraphCode) -> None:
         repo_id = graphcode.repo_meta.repo_id
         with self.engine.begin() as connection:
+            connection.execute(text("DELETE FROM spans WHERE repo_id = :repo_id"), {"repo_id": repo_id})
+            connection.execute(text("DELETE FROM relations WHERE repo_id = :repo_id"), {"repo_id": repo_id})
+            connection.execute(text("DELETE FROM symbols WHERE repo_id = :repo_id"), {"repo_id": repo_id})
+            connection.execute(text("DELETE FROM files WHERE repo_id = :repo_id"), {"repo_id": repo_id})
+            connection.execute(text("DELETE FROM modules WHERE repo_id = :repo_id"), {"repo_id": repo_id})
             connection.execute(
                 text(
                     """
@@ -77,7 +82,7 @@ class GraphRepository:
                         scan_time = EXCLUDED.scan_time
                     """
                 ),
-                graphcode.repo_meta.model_dump(),
+                self._repo_meta_params(graphcode),
             )
 
             for module in graphcode.modules:
@@ -98,16 +103,17 @@ class GraphRepository:
                     text(
                         """
                         INSERT INTO files (
-                            id, repo_id, module_id, name, path, summary, language, start_line, end_line
+                            id, repo_id, module_id, name, path, summary, content_hash, language, start_line, end_line
                         )
                         VALUES (
-                            :id, :repo_id, :module_id, :name, :path, :summary, :language, :start_line, :end_line
+                            :id, :repo_id, :module_id, :name, :path, :summary, :content_hash, :language, :start_line, :end_line
                         )
                         ON CONFLICT (id) DO UPDATE SET
                             module_id = EXCLUDED.module_id,
                             name = EXCLUDED.name,
                             path = EXCLUDED.path,
                             summary = EXCLUDED.summary,
+                            content_hash = EXCLUDED.content_hash,
                             language = EXCLUDED.language,
                             start_line = EXCLUDED.start_line,
                             end_line = EXCLUDED.end_line
@@ -170,8 +176,6 @@ class GraphRepository:
                     ),
                     {"repo_id": repo_id, **relation.model_dump()},
                 )
-
-            connection.execute(text("DELETE FROM spans WHERE repo_id = :repo_id"), {"repo_id": repo_id})
             for span in graphcode.spans:
                 connection.execute(
                     text(
@@ -209,7 +213,7 @@ class GraphRepository:
             return cached
         row = self._fetch_one(
             """
-            SELECT id, name, path, module_id, summary, language, start_line, end_line
+            SELECT id, name, path, module_id, summary, content_hash, language, start_line, end_line
             FROM files WHERE id = :id
             """,
             {"id": file_id},
@@ -291,7 +295,7 @@ class GraphRepository:
     def list_files_by_module(self, module_id: str) -> list[File]:
         rows = self._fetch_all(
             """
-            SELECT id, name, path, module_id, summary, language, start_line, end_line
+            SELECT id, name, path, module_id, summary, content_hash, language, start_line, end_line
             FROM files WHERE module_id = :module_id
             ORDER BY path ASC
             """,
@@ -328,13 +332,52 @@ class GraphRepository:
     def list_files(self, repo_id: str) -> list[File]:
         rows = self._fetch_all(
             """
-            SELECT id, name, path, module_id, summary, language, start_line, end_line
+            SELECT id, name, path, module_id, summary, content_hash, language, start_line, end_line
             FROM files WHERE repo_id = :repo_id
             ORDER BY path ASC
             """,
             {"repo_id": repo_id},
         )
         return [File(**row._mapping) for row in rows]
+
+    def get_repo_meta(self, repo_id: str) -> RepoMeta | None:
+        row = self._fetch_one(
+            """
+            SELECT repo_id, repo_path, branch, commit_hash, scan_time
+            FROM repos
+            WHERE repo_id = :repo_id
+            """,
+            {"repo_id": repo_id},
+        )
+        if not row:
+            return None
+        return RepoMeta(**row._mapping)
+
+    def find_repo_id_by_path(self, repo_path: str) -> str | None:
+        row = self._fetch_one(
+            """
+            SELECT repo_id
+            FROM repos
+            WHERE repo_path = :repo_path
+            ORDER BY scan_time DESC
+            LIMIT 1
+            """,
+            {"repo_path": repo_path},
+        )
+        return row.repo_id if row else None
+
+    def load_graphcode(self, repo_id: str) -> GraphCode | None:
+        repo_meta = self.get_repo_meta(repo_id)
+        if repo_meta is None:
+            return None
+        return GraphCode(
+            repo_meta=repo_meta,
+            modules=self.list_modules(repo_id),
+            files=self.list_files(repo_id),
+            symbols=self.list_symbols(repo_id),
+            relations=self.list_relations(repo_id),
+            spans=self.list_spans(repo_id),
+        )
 
     def list_symbols_by_file(self, file_id: str) -> list[Symbol]:
         rows = self._fetch_all(
@@ -420,7 +463,7 @@ class GraphRepository:
 
         rows = self._fetch_all(
             """
-            SELECT id, name, path, module_id, summary, language, start_line, end_line
+            SELECT id, name, path, module_id, summary, content_hash, language, start_line, end_line
             FROM files
             WHERE lower(name) = :name
                OR lower(path) = :name
@@ -438,6 +481,29 @@ class GraphRepository:
             {"name": normalized, "partial": f"%{normalized}%", "limit": limit},
         )
         return [File(**row._mapping) for row in rows]
+
+    def list_symbols(self, repo_id: str) -> list[Symbol]:
+        rows = self._fetch_all(
+            """
+            SELECT id, name, qualified_name, type, signature, file_id, module_id,
+                   summary, start_line, end_line, visibility, doc
+            FROM symbols WHERE repo_id = :repo_id
+            ORDER BY file_id ASC, start_line ASC, qualified_name ASC
+            """,
+            {"repo_id": repo_id},
+        )
+        return [Symbol(**row._mapping) for row in rows]
+
+    def list_spans(self, repo_id: str) -> list[Span]:
+        rows = self._fetch_all(
+            """
+            SELECT file_path, line_start, line_end, module_id, file_id, symbol_id, node_type
+            FROM spans WHERE repo_id = :repo_id
+            ORDER BY file_path ASC, line_start ASC
+            """,
+            {"repo_id": repo_id},
+        )
+        return [Span(**row._mapping) for row in rows]
 
     def find_symbols_by_name(self, name: str, limit: int = 10) -> list[Symbol]:
         normalized = name.strip().lower()
@@ -522,6 +588,7 @@ class GraphRepository:
                 name TEXT NOT NULL,
                 path TEXT NOT NULL,
                 summary TEXT NOT NULL DEFAULT '',
+                content_hash TEXT NOT NULL DEFAULT '',
                 language TEXT NOT NULL,
                 start_line INTEGER NOT NULL,
                 end_line INTEGER NOT NULL
@@ -566,6 +633,12 @@ class GraphRepository:
             """
         schema_path = Path(__file__).with_name("schema.sql")
         return schema_path.read_text(encoding="utf-8")
+
+    def _repo_meta_params(self, graphcode: GraphCode) -> dict[str, object]:
+        params = graphcode.repo_meta.model_dump()
+        if self.engine.dialect.name == "sqlite":
+            params["scan_time"] = graphcode.repo_meta.scan_time.isoformat()
+        return params
 
     def _load_vector_schema_statements(self) -> str:
         if self.engine.dialect.name == "sqlite":
@@ -612,6 +685,11 @@ class GraphRepository:
                 connection.execute(
                     text(f"ALTER TABLE {table_name} ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
                 )
+        file_columns = self._list_columns(connection, "files")
+        if "content_hash" not in file_columns:
+            connection.execute(
+                text("ALTER TABLE files ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''")
+            )
 
     def _list_columns(self, connection, table_name: str) -> set[str]:
         if self.engine.dialect.name == "sqlite":

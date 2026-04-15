@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS files (
     name TEXT NOT NULL,
     path TEXT NOT NULL,
     summary TEXT NOT NULL DEFAULT '',
+    content_hash TEXT NOT NULL DEFAULT '',
     language TEXT NOT NULL,
     start_line INTEGER NOT NULL,
     end_line INTEGER NOT NULL

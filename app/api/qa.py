@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from app.api.dependencies import get_graph_repository, memory_manager
+from app.api.errors import handle_api_error
 from app.models.qa_models import QAAskRequest, QAResponse, SessionStateResponse
 from app.services.agents.qa_agent import QAAgent
 
@@ -24,7 +25,7 @@ def ask_question(request: QAAskRequest) -> QAResponse:
             session_id=request.session_id,
         )
     except Exception as exc:  # pragma: no cover
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        handle_api_error(exc)
 
 
 @router.get("/session/{session_id}", response_model=SessionStateResponse)

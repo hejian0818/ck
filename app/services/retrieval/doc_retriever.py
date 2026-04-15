@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.core.config import settings
+from app.core.logging import get_logger
 from app.models.anchor import Anchor
 from app.models.doc_models import SectionPlan
 from app.models.graph_objects import File, Module, Relation, Symbol
@@ -17,6 +18,7 @@ from app.storage.vector_store import VectorStore
 GraphObject = Module | File | Symbol
 _API_SYMBOL_TYPES = {"route", "controller", "endpoint", "api"}
 _CALL_CHAIN_RELATIONS = {"calls", "depends_on"}
+logger = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -258,46 +260,53 @@ class DocRetriever:
         if self.embedding_builder is None or self.vector_store is None:
             return [], [], {}
 
-        query_vector = self.embedding_builder.encode_summary(self._build_query(section))
-        search_results = []
-        if section.section_type == "overview":
-            search_results.extend(
-                self.vector_store.search_modules(
-                    repo_id=repo_id,
-                    query_vector=query_vector,
-                    top_k=settings.DOC_VECTOR_TOP_K,
+        try:
+            query_vector = self.embedding_builder.encode_summary(self._build_query(section))
+            search_results = []
+            if section.section_type == "overview":
+                search_results.extend(
+                    self.vector_store.search_modules(
+                        repo_id=repo_id,
+                        query_vector=query_vector,
+                        top_k=settings.DOC_VECTOR_TOP_K,
+                    )
                 )
-            )
-        elif section.section_type in {"module", "architecture"}:
-            search_results.extend(
-                self.vector_store.search_files(
-                    repo_id=repo_id,
-                    query_vector=query_vector,
-                    top_k=settings.DOC_VECTOR_TOP_K,
+            elif section.section_type in {"module", "architecture"}:
+                search_results.extend(
+                    self.vector_store.search_files(
+                        repo_id=repo_id,
+                        query_vector=query_vector,
+                        top_k=settings.DOC_VECTOR_TOP_K,
+                    )
                 )
-            )
-            search_results.extend(
-                self.vector_store.search_symbols(
-                    repo_id=repo_id,
-                    query_vector=query_vector,
-                    top_k=settings.DOC_VECTOR_TOP_K,
+                search_results.extend(
+                    self.vector_store.search_symbols(
+                        repo_id=repo_id,
+                        query_vector=query_vector,
+                        top_k=settings.DOC_VECTOR_TOP_K,
+                    )
                 )
-            )
-        else:
-            search_results.extend(
-                self.vector_store.search_symbols(
-                    repo_id=repo_id,
-                    query_vector=query_vector,
-                    top_k=settings.DOC_VECTOR_TOP_K,
+            else:
+                search_results.extend(
+                    self.vector_store.search_symbols(
+                        repo_id=repo_id,
+                        query_vector=query_vector,
+                        top_k=settings.DOC_VECTOR_TOP_K,
+                    )
                 )
-            )
-            search_results.extend(
-                self.vector_store.search_relations(
-                    repo_id=repo_id,
-                    query_vector=query_vector,
-                    top_k=settings.DOC_VECTOR_TOP_K,
+                search_results.extend(
+                    self.vector_store.search_relations(
+                        repo_id=repo_id,
+                        query_vector=query_vector,
+                        top_k=settings.DOC_VECTOR_TOP_K,
+                    )
                 )
+        except Exception as exc:
+            logger.warning(
+                "doc_vector_retrieval_failed",
+                extra={"context": {"repo_id": repo_id, "section_id": section.section_id, "error": str(exc)}},
             )
+            return [], [], {}
 
         objects: list[GraphObject] = []
         relations: list[Relation] = []

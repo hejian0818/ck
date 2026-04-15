@@ -22,6 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build CodeWiki repository index")
     parser.add_argument("--repo-path", required=True, help="Path to repository")
     parser.add_argument("--branch", default="main", help="Repository branch")
+    parser.add_argument("--no-incremental", action="store_true", help="Disable incremental reuse of unchanged files")
     return parser.parse_args()
 
 
@@ -38,10 +39,25 @@ def main() -> None:
             vector_store=VectorStore(settings.DATABASE_URL),
         )
 
-    graph = graph_builder.build_graph(repo_path=args.repo_path, branch=args.branch)
+    previous_graph = None
+    if not args.no_incremental:
+        previous_repo_id = repository.find_repo_id_by_path(str(Path(args.repo_path).resolve()))
+        if previous_repo_id is not None:
+            previous_graph = repository.load_graphcode(previous_repo_id)
+
+    graph = graph_builder.build_graph(
+        repo_path=args.repo_path,
+        branch=args.branch,
+        previous_graph=previous_graph,
+    )
     repository.save_graphcode(graph)
     print(f"repo_id={graph.repo_meta.repo_id}")
     print(f"modules={len(graph.modules)} files={len(graph.files)} symbols={len(graph.symbols)} relations={len(graph.relations)}")
+    print(
+        "incremental="
+        f"{graph_builder.last_build_stats['incremental']} parsed={graph_builder.last_build_stats['parsed_files']} "
+        f"reused={graph_builder.last_build_stats['reused_files']} deleted={graph_builder.last_build_stats['deleted_files']}"
+    )
 
 
 if __name__ == "__main__":

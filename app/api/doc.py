@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
-from app.api.dependencies import get_graph_repository
+from app.api.dependencies import get_graph_repository, memory_manager
+from app.api.errors import handle_api_error
 from app.models.doc_models import DocGenerateRequest, DocPlanRequest, DocumentResult, DocumentSkeleton, SectionPlan
 from app.services.agents.doc_agent import DocAgent
+from app.services.review.doc_reviewer import DocumentReviewer
 
 router = APIRouter(prefix="/doc", tags=["doc"])
 
@@ -16,10 +18,15 @@ def plan_document(request: DocPlanRequest) -> DocumentSkeleton:
     """Plan a document skeleton for a repository."""
 
     try:
-        agent = DocAgent(repository=get_graph_repository())
+        repository = get_graph_repository()
+        agent = DocAgent(
+            repository=repository,
+            memory_manager=memory_manager,
+            reviewer=DocumentReviewer(repository),
+        )
         return agent.plan(request.repo_id)
     except Exception as exc:  # pragma: no cover
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        handle_api_error(exc)
 
 
 @router.post("/generate", response_model=DocumentResult)
@@ -27,10 +34,15 @@ def generate_document(request: DocGenerateRequest) -> DocumentResult:
     """Generate a document result from a repository graph."""
 
     try:
-        agent = DocAgent(repository=get_graph_repository())
+        repository = get_graph_repository()
+        agent = DocAgent(
+            repository=repository,
+            memory_manager=memory_manager,
+            reviewer=DocumentReviewer(repository),
+        )
         return agent.generate(repo_id=request.repo_id, skeleton=request.skeleton)
     except Exception as exc:  # pragma: no cover
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        handle_api_error(exc)
 
 
 @router.get("/{repo_id}/sections", response_model=list[SectionPlan])
@@ -38,7 +50,12 @@ def list_document_sections(repo_id: str) -> list[SectionPlan]:
     """List planned document sections for a repository."""
 
     try:
-        agent = DocAgent(repository=get_graph_repository())
+        repository = get_graph_repository()
+        agent = DocAgent(
+            repository=repository,
+            memory_manager=memory_manager,
+            reviewer=DocumentReviewer(repository),
+        )
         return agent.list_sections(repo_id)
     except Exception as exc:  # pragma: no cover
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        handle_api_error(exc)

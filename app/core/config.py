@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     CACHE_GRAPH_TTL: int = Field(default=60)
     LLM_MAX_RETRIES: int = Field(default=3)
     LLM_TIMEOUT: int = Field(default=30)
+    REPO_SCAN_ALLOWED_ROOTS: str = Field(default="")
 
 
 @lru_cache

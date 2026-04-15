@@ -42,6 +42,7 @@ class File(BaseModel):
     path: str
     module_id: str
     summary: str = ""
+    content_hash: str = ""
     language: str
     start_line: int
     end_line: int

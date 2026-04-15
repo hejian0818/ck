@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from app.api.dependencies import get_graph_repository
+from app.api.errors import handle_api_error, validate_repo_path
 from app.core.config import settings
 from app.models.qa_models import RepoBuildRequest, RepoBuildResponse, SummaryResponse
 from app.services.cleanarch.graph_builder import GraphBuilder
@@ -19,6 +20,7 @@ def build_index(request: RepoBuildRequest) -> RepoBuildResponse:
     """Build and persist a repository index."""
 
     try:
+        repo_path = validate_repo_path(request.repo_path)
         repository = get_graph_repository()
         repository.initialize_schema()
         graph_builder = GraphBuilder()
@@ -29,12 +31,33 @@ def build_index(request: RepoBuildRequest) -> RepoBuildResponse:
                 vector_store=VectorStore(settings.DATABASE_URL),
             )
 
-        graph = graph_builder.build_graph(repo_path=request.repo_path, branch=request.branch)
+        previous_graph = None
+        if request.incremental:
+            previous_repo_id = repository.find_repo_id_by_path(repo_path)
+            if previous_repo_id is not None:
+                previous_graph = repository.load_graphcode(previous_repo_id)
+
+        graph = graph_builder.build_graph(
+            repo_path=repo_path,
+            branch=request.branch,
+            previous_graph=previous_graph,
+        )
         repository.save_graphcode(graph)
     except Exception as exc:  # pragma: no cover
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        handle_api_error(exc)
 
-    return RepoBuildResponse(build_id=graph.repo_meta.repo_id, status="success")
+    return RepoBuildResponse(
+        build_id=graph.repo_meta.repo_id,
+        status="success",
+        **graph_builder.last_build_stats,
+    )
+
+
+@router.post("/scan", response_model=RepoBuildResponse)
+def scan_repo(request: RepoBuildRequest) -> RepoBuildResponse:
+    """Alias for building and persisting a repository index."""
+
+    return build_index(request)
 
 
 @router.get("/{object_type}/{object_id}/summary", response_model=SummaryResponse)

@@ -5,7 +5,11 @@ from __future__ import annotations
 import unittest
 from unittest.mock import Mock, patch
 
+from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
+
 from app.models.vector_models import Embedding
+from app.storage.repositories import GraphRepository
 from app.storage.vector_store import VectorStore
 
 
@@ -117,6 +121,28 @@ class VectorStoreTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             store.search_similar(repo_id="repo_test", query_vector=[1.0], metric="dot")
+
+    def test_sqlite_vector_store_saves_and_searches_in_python(self) -> None:
+        engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        repository = GraphRepository(database_url="sqlite://", engine=engine)
+        repository.init_vector_tables()
+        store = VectorStore(database_url="sqlite://", engine=engine)
+
+        store.save_embeddings(
+            [
+                Embedding(repo_id="repo_test", object_id="S_close", object_type="symbol", embedding=[1.0, 0.0]),
+                Embedding(repo_id="repo_test", object_id="S_far", object_type="symbol", embedding=[0.0, 1.0]),
+            ]
+        )
+
+        results = store.search_symbols(repo_id="repo_test", query_vector=[1.0, 0.0], top_k=1, min_similarity=0.0)
+
+        self.assertEqual([result.object_id for result in results], ["S_close"])
+        self.assertEqual(store.get_embedding("repo_test", "S_close"), [1.0, 0.0])
 
 
 if __name__ == "__main__":

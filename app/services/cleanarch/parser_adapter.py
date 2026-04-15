@@ -15,6 +15,7 @@ class ParseResult(BaseModel):
     symbols: list[Symbol] = Field(default_factory=list)
     relations: list[Relation] = Field(default_factory=list)
     spans: list[Span] = Field(default_factory=list)
+    import_aliases: dict[str, str] = Field(default_factory=dict)
 
 
 class ParserAdapter(ABC):
