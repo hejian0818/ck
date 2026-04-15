@@ -997,6 +997,7 @@ class SummaryPipelineTests(unittest.TestCase):
         self.assertEqual(payload.status, "success")
         self.assertTrue(payload.build_id)
         self.assertTrue(repository.list_modules(payload.build_id))
+        self.assertGreaterEqual(payload.parsed_files, 1)
 
     def test_scan_api_rejects_missing_repository_path(self) -> None:
         client = TestClient(app)
@@ -1009,6 +1010,79 @@ class SummaryPipelineTests(unittest.TestCase):
         response = client.post("/repo/scan", json={"repo_path": "/path/that/does/not/exist", "branch": "main"})
 
         self.assertEqual(response.status_code, 404)
+
+    def test_graph_builder_reuses_unchanged_files_incrementally(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            src_dir = repo_path / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "main.py").write_text(
+                "from util import format_name\n\n"
+                "def helper(name):\n"
+                "    return format_name(name)\n",
+                encoding="utf-8",
+            )
+            (src_dir / "util.py").write_text(
+                "def format_name(value):\n"
+                "    return value.strip()\n",
+                encoding="utf-8",
+            )
+
+            builder = GraphBuilder()
+            initial_graph = builder.build_graph(repo_path=str(repo_path))
+
+            (src_dir / "util.py").write_text(
+                "def format_name(value):\n"
+                "    value = value.strip()\n"
+                "    return value.upper()\n",
+                encoding="utf-8",
+            )
+            incremental_graph = builder.build_graph(repo_path=str(repo_path), previous_graph=initial_graph)
+
+        self.assertTrue(builder.last_build_stats["incremental"])
+        self.assertEqual(builder.last_build_stats["reused_files"], 1)
+        self.assertEqual(builder.last_build_stats["parsed_files"], 1)
+        main_file = next(file_obj for file_obj in incremental_graph.files if file_obj.path == "src/main.py")
+        util_file = next(file_obj for file_obj in incremental_graph.files if file_obj.path == "src/util.py")
+        self.assertEqual(main_file.content_hash, next(file_obj for file_obj in initial_graph.files if file_obj.path == "src/main.py").content_hash)
+        self.assertNotEqual(util_file.content_hash, next(file_obj for file_obj in initial_graph.files if file_obj.path == "src/util.py").content_hash)
+
+    def test_scan_api_reports_incremental_reuse(self) -> None:
+        repository = self._build_repository()
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            src_dir = repo_path / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "main.py").write_text(
+                "from util import format_name\n\n"
+                "def helper(name):\n"
+                "    return format_name(name)\n",
+                encoding="utf-8",
+            )
+            (src_dir / "util.py").write_text(
+                "def format_name(value):\n"
+                "    return value.strip()\n",
+                encoding="utf-8",
+            )
+
+            with patch("app.api.repo.get_graph_repository", return_value=repository):
+                client = TestClient(app)
+                first_response = client.post("/repo/scan", json={"repo_path": str(repo_path), "branch": "main"})
+                self.assertEqual(first_response.status_code, 200)
+
+                (src_dir / "util.py").write_text(
+                    "def format_name(value):\n"
+                    "    value = value.strip()\n"
+                    "    return value.upper()\n",
+                    encoding="utf-8",
+                )
+                second_response = client.post("/repo/scan", json={"repo_path": str(repo_path), "branch": "main"})
+
+        self.assertEqual(second_response.status_code, 200)
+        payload = RepoBuildResponse.model_validate(second_response.json())
+        self.assertTrue(payload.incremental)
+        self.assertEqual(payload.reused_files, 1)
+        self.assertEqual(payload.parsed_files, 1)
 
 
 if __name__ == "__main__":

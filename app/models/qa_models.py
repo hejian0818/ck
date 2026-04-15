@@ -59,6 +59,7 @@ class RepoBuildRequest(BaseModel):
 
     repo_path: str
     branch: str = "main"
+    incremental: bool = True
 
 
 class RepoBuildResponse(BaseModel):
@@ -68,6 +69,10 @@ class RepoBuildResponse(BaseModel):
 
     build_id: str
     status: Literal["success"]
+    incremental: bool = False
+    parsed_files: int = 0
+    reused_files: int = 0
+    deleted_files: int = 0
 
 
 class SummaryResponse(BaseModel):

@@ -29,3 +29,45 @@ jobs:
 
       - name: Run tests
         run: uv run python -m pytest app/tests/ -q
+
+  postgres-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: ck_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d ck_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Enable pgvector
+        env:
+          PGPASSWORD: postgres
+        run: psql -h localhost -U postgres -d ck_test -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+      - name: Run PostgreSQL integration tests
+        env:
+          PGVECTOR_TEST_URL: postgresql://postgres:postgres@localhost:5432/ck_test
+        run: uv run python -m pytest app/tests/test_postgres_integration.py -q

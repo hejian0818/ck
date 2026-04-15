@@ -35,8 +35,14 @@ class GraphBuilder:
         self.summary_service = summary_service or SummaryGenerationService()
         self.embedding_builder = embedding_builder
         self.vector_store = vector_store
+        self.last_build_stats = {
+            "incremental": False,
+            "parsed_files": 0,
+            "reused_files": 0,
+            "deleted_files": 0,
+        }
 
-    def build_graph(self, repo_path: str, branch: str = "main") -> GraphCode:
+    def build_graph(self, repo_path: str, branch: str = "main", previous_graph: GraphCode | None = None) -> GraphCode:
         """Build a graph representation from a repository."""
 
         root = Path(repo_path).resolve()
@@ -47,11 +53,29 @@ class GraphBuilder:
         relations: list[Relation] = []
         spans: list[Span] = []
         export_lookup_specs: list[tuple[str, str, dict[str, str], dict[str, str]]] = []
+        reused_relations: list[Relation] = []
+        previous_files = {file_obj.path: file_obj for file_obj in previous_graph.files} if previous_graph else {}
+        previous_symbols_by_file: dict[str, list[Symbol]] = {}
+        previous_spans_by_file: dict[str, list[Span]] = {}
+        previous_relations_by_file: dict[str, list[Relation]] = {}
+        if previous_graph is not None:
+            previous_symbols_by_file = self._group_symbols_by_file(previous_graph.symbols)
+            previous_spans_by_file = self._group_spans_by_file(previous_graph.spans)
+            previous_relations_by_file = self._group_relations_by_file(previous_graph.relations, previous_graph.symbols)
+        previous_file_paths = set(previous_files)
+        current_file_paths = set(file_paths)
+        self.last_build_stats = {
+            "incremental": previous_graph is not None,
+            "parsed_files": 0,
+            "reused_files": 0,
+            "deleted_files": len(previous_file_paths - current_file_paths),
+        }
 
         pending_relations: list[tuple[Relation, str, str, str, dict[str, str], dict[str, str]]] = []
 
         for index, relative_path in enumerate(file_paths, start=1):
             absolute_path = root / relative_path
+            content_hash = self._hash_file(absolute_path)
             module_name, module_path = self._infer_module(relative_path, root.name)
             module = module_map.setdefault(
                 module_name,
@@ -71,9 +95,31 @@ class GraphBuilder:
                 path=relative_path,
                 module_id=module.id,
                 language=language,
+                content_hash=content_hash,
                 start_line=1,
                 end_line=line_count,
             )
+            previous_file = previous_files.get(relative_path)
+            if previous_file is not None and previous_file.content_hash == content_hash:
+                files.append(file_obj.model_copy(update={"summary": previous_file.summary}))
+                spans.append(
+                    Span(
+                        file_path=relative_path,
+                        line_start=1,
+                        line_end=line_count,
+                        module_id=module.id,
+                        file_id=file_id,
+                        symbol_id=None,
+                        node_type="file",
+                    )
+                )
+                symbols.extend(previous_symbols_by_file.get(previous_file.id, []))
+                spans.extend(previous_spans_by_file.get(previous_file.id, []))
+                reused_relations.extend(previous_relations_by_file.get(previous_file.id, []))
+                self.last_build_stats["reused_files"] += 1
+                continue
+
+            self.last_build_stats["parsed_files"] += 1
             files.append(file_obj)
             spans.append(
                 Span(
@@ -166,6 +212,8 @@ class GraphBuilder:
             symbols=symbols,
             export_lookup_specs=export_lookup_specs,
         )
+        relations.extend(self._filter_valid_relations(reused_relations, modules=list(module_map.values()), files=files, symbols=symbols))
+        relations = self._resequence_relations(relations)
         graph = GraphCode(
             repo_meta=repo_meta,
             modules=sorted(module_map.values(), key=lambda item: item.name),
@@ -230,6 +278,14 @@ class GraphBuilder:
     def _count_lines(path: Path) -> int:
         with path.open("r", encoding="utf-8") as handle:
             return max(1, sum(1 for _ in handle))
+
+    @staticmethod
+    def _hash_file(path: Path) -> str:
+        digest = hashlib.sha1()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(8192), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     @staticmethod
     def _build_repo_id(repo_path: str) -> str:
@@ -461,6 +517,66 @@ class GraphBuilder:
         if object_id in modules_by_id:
             return object_id
         return default_module_id
+
+    @staticmethod
+    def _group_symbols_by_file(symbols: list[Symbol]) -> dict[str, list[Symbol]]:
+        grouped: dict[str, list[Symbol]] = {}
+        for symbol in symbols:
+            grouped.setdefault(symbol.file_id, []).append(symbol)
+        return grouped
+
+    @staticmethod
+    def _group_spans_by_file(spans: list[Span]) -> dict[str, list[Span]]:
+        grouped: dict[str, list[Span]] = {}
+        for span in spans:
+            if span.file_id and span.node_type != "file":
+                grouped.setdefault(span.file_id, []).append(span)
+        return grouped
+
+    @staticmethod
+    def _group_relations_by_file(relations: list[Relation], symbols: list[Symbol]) -> dict[str, list[Relation]]:
+        symbol_to_file = {symbol.id: symbol.file_id for symbol in symbols}
+        grouped: dict[str, list[Relation]] = {}
+        for relation in relations:
+            file_id = symbol_to_file.get(relation.source_id)
+            if file_id:
+                grouped.setdefault(file_id, []).append(relation)
+        return grouped
+
+    @staticmethod
+    def _filter_valid_relations(
+        relations: list[Relation],
+        *,
+        modules: list[Module],
+        files: list[File],
+        symbols: list[Symbol],
+    ) -> list[Relation]:
+        module_ids = {module.id for module in modules}
+        file_ids = {file_obj.id for file_obj in files}
+        symbol_ids = {symbol.id for symbol in symbols}
+        valid: list[Relation] = []
+        for relation in relations:
+            if relation.source_type == "symbol" and relation.source_id not in symbol_ids:
+                continue
+            if relation.source_type == "file" and relation.source_id not in file_ids:
+                continue
+            if relation.source_type == "module" and relation.source_id not in module_ids:
+                continue
+            if relation.target_type == "symbol" and relation.target_id not in symbol_ids:
+                continue
+            if relation.target_type == "file" and relation.target_id not in file_ids:
+                continue
+            if relation.target_type == "module" and relation.target_id not in module_ids:
+                continue
+            valid.append(relation)
+        return valid
+
+    @staticmethod
+    def _resequence_relations(relations: list[Relation]) -> list[Relation]:
+        return [
+            relation.model_copy(update={"id": f"R_{index}"})
+            for index, relation in enumerate(relations, start=1)
+        ]
 
     @staticmethod
     def _collect_export_lookup_specs(

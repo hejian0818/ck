@@ -31,12 +31,26 @@ def build_index(request: RepoBuildRequest) -> RepoBuildResponse:
                 vector_store=VectorStore(settings.DATABASE_URL),
             )
 
-        graph = graph_builder.build_graph(repo_path=repo_path, branch=request.branch)
+        previous_graph = None
+        if request.incremental:
+            previous_repo_id = repository.find_repo_id_by_path(repo_path)
+            if previous_repo_id is not None:
+                previous_graph = repository.load_graphcode(previous_repo_id)
+
+        graph = graph_builder.build_graph(
+            repo_path=repo_path,
+            branch=request.branch,
+            previous_graph=previous_graph,
+        )
         repository.save_graphcode(graph)
     except Exception as exc:  # pragma: no cover
         handle_api_error(exc)
 
-    return RepoBuildResponse(build_id=graph.repo_meta.repo_id, status="success")
+    return RepoBuildResponse(
+        build_id=graph.repo_meta.repo_id,
+        status="success",
+        **graph_builder.last_build_stats,
+    )
 
 
 @router.post("/scan", response_model=RepoBuildResponse)
