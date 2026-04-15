@@ -115,6 +115,128 @@ export function helper(name) {
         self.assertEqual(result.import_aliases["format"], "util.default")
         self.assertEqual(result.import_aliases["clean"], "util.normalize")
 
+    def test_parse_javascript_file_tracks_default_export_identifier(self) -> None:
+        source = """
+const format = (value) => value.trim();
+
+export default format;
+"""
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sample.js"
+            path.write_text(source, encoding="utf-8")
+            result = TreeSitterAdapter().parse_file(str(path))
+
+        exports = {(relation.source_id, relation.target_id) for relation in result.relations if relation.relation_type == "exports"}
+        self.assertIn(("format", "export:default"), exports)
+
+    def test_parse_javascript_file_extracts_anonymous_default_function_symbol(self) -> None:
+        source = """
+export default function (value) {
+  return value.trim();
+}
+"""
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sample.js"
+            path.write_text(source, encoding="utf-8")
+            result = TreeSitterAdapter().parse_file(str(path))
+
+        names = {symbol.qualified_name for symbol in result.symbols}
+        exports = {(relation.source_id, relation.target_id) for relation in result.relations if relation.relation_type == "exports"}
+        self.assertIn("sample.default", names)
+        self.assertIn(("sample.default", "export:default"), exports)
+
+    def test_parse_javascript_file_tracks_default_named_export_alias(self) -> None:
+        source = """
+const format = (value) => value.trim();
+
+export { format as default };
+"""
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sample.js"
+            path.write_text(source, encoding="utf-8")
+            result = TreeSitterAdapter().parse_file(str(path))
+
+        exports = {(relation.source_id, relation.target_id) for relation in result.relations if relation.relation_type == "exports"}
+        self.assertIn(("format", "export:default"), exports)
+
+    def test_parse_javascript_file_extracts_anonymous_default_class_symbol(self) -> None:
+        source = """
+export default class {
+  render() {
+    return 1;
+  }
+}
+"""
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sample.js"
+            path.write_text(source, encoding="utf-8")
+            result = TreeSitterAdapter().parse_file(str(path))
+
+        names = {symbol.qualified_name for symbol in result.symbols}
+        exports = {(relation.source_id, relation.target_id) for relation in result.relations if relation.relation_type == "exports"}
+        self.assertIn("sample.default", names)
+        self.assertIn(("sample.default", "export:default"), exports)
+
+    def test_parse_javascript_file_tracks_commonjs_require_aliases(self) -> None:
+        source = """
+const util = require("./util");
+const { format: fmt, normalize } = require("./other");
+"""
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sample.js"
+            path.write_text(source, encoding="utf-8")
+            result = TreeSitterAdapter().parse_file(str(path))
+
+        self.assertEqual(result.import_aliases["util"], "util")
+        self.assertEqual(result.import_aliases["fmt"], "other.format")
+        self.assertEqual(result.import_aliases["normalize"], "other.normalize")
+
+    def test_parse_javascript_file_tracks_commonjs_exports(self) -> None:
+        source = """
+const format = (value) => value.trim();
+const normalize = (value) => value.toLowerCase();
+
+module.exports = format;
+exports.normalize = normalize;
+"""
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sample.js"
+            path.write_text(source, encoding="utf-8")
+            result = TreeSitterAdapter().parse_file(str(path))
+
+        exports = {(relation.source_id, relation.target_id) for relation in result.relations if relation.relation_type == "exports"}
+        self.assertIn(("format", "export:default"), exports)
+        self.assertIn(("normalize", "export:normalize"), exports)
+
+    def test_parse_javascript_file_tracks_commonjs_object_exports(self) -> None:
+        source = """
+const format = (value) => value.trim();
+const clean = (value) => value.toLowerCase();
+
+module.exports = { format, normalize: clean };
+"""
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sample.js"
+            path.write_text(source, encoding="utf-8")
+            result = TreeSitterAdapter().parse_file(str(path))
+
+        exports = {(relation.source_id, relation.target_id) for relation in result.relations if relation.relation_type == "exports"}
+        self.assertIn(("format", "export:format"), exports)
+        self.assertIn(("clean", "export:normalize"), exports)
+
+    def test_parse_javascript_file_tracks_re_exports(self) -> None:
+        source = """
+export { format, default as View } from "./util";
+"""
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sample.js"
+            path.write_text(source, encoding="utf-8")
+            result = TreeSitterAdapter().parse_file(str(path))
+
+        exports = {(relation.source_id, relation.target_id) for relation in result.relations if relation.relation_type == "exports"}
+        self.assertIn(("util.format", "export:format"), exports)
+        self.assertIn(("util.default", "export:View"), exports)
+
     def test_parse_go_file_extracts_calls(self) -> None:
         source = """
 package sample
@@ -133,7 +255,7 @@ func normalize(value string) string {
             result = TreeSitterAdapter().parse_file(str(path))
 
         calls = {(relation.source_id, relation.target_id) for relation in result.relations}
-        self.assertIn(("Helper", "normalize"), calls)
+        self.assertIn(("sample.Helper", "normalize"), calls)
         names = {symbol.qualified_name for symbol in result.symbols}
         self.assertIn("sample.Helper", names)
         self.assertIn("sample.normalize", names)
@@ -249,6 +371,23 @@ class Service {
 
         self.assertEqual(result.import_aliases["format"], "demo.util.Helper.format")
 
+    def test_parse_java_file_tracks_regular_import_aliases(self) -> None:
+        source = """
+import demo.util.Helper;
+
+class Service {
+    void run() {
+        Helper.format();
+    }
+}
+"""
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "Service.java"
+            path.write_text(source, encoding="utf-8")
+            result = SpoonAdapter().parse_file(str(path))
+
+        self.assertEqual(result.import_aliases["Helper"], "demo.util.Helper")
+
 
 class CDTAdapterTests(unittest.TestCase):
     def test_parse_cpp_file_extracts_direct_calls(self) -> None:
@@ -268,6 +407,51 @@ int run() {
 
         calls = {(relation.source_id, relation.target_id) for relation in result.relations}
         self.assertIn(("run", "helper"), calls)
+
+    def test_parse_cpp_file_tracks_namespace_aliases(self) -> None:
+        source = """
+namespace h = util::helpers;
+
+int run() {
+    return h::Formatter::format();
+}
+"""
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sample.cpp"
+            path.write_text(source, encoding="utf-8")
+            result = CDTAdapter().parse_file(str(path))
+
+        self.assertEqual(result.import_aliases["h"], "util::helpers")
+
+    def test_parse_cpp_file_tracks_using_declaration_aliases(self) -> None:
+        source = """
+using util::helpers::Formatter;
+
+int run() {
+    return Formatter::format();
+}
+"""
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sample.cpp"
+            path.write_text(source, encoding="utf-8")
+            result = CDTAdapter().parse_file(str(path))
+
+        self.assertEqual(result.import_aliases["Formatter"], "util::helpers::Formatter")
+
+    def test_parse_cpp_file_tracks_using_type_aliases(self) -> None:
+        source = """
+using Fmt = util::helpers::Formatter;
+
+int run() {
+    return Fmt::format();
+}
+"""
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sample.cpp"
+            path.write_text(source, encoding="utf-8")
+            result = CDTAdapter().parse_file(str(path))
+
+        self.assertEqual(result.import_aliases["Fmt"], "util::helpers::Formatter")
 
 
 if __name__ == "__main__":

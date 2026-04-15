@@ -136,6 +136,328 @@ class SummaryPipelineTests(unittest.TestCase):
         self.assertEqual(resolved_target.qualified_name, "format")
         self.assertEqual(files_by_id[resolved_target.file_id].path, "src/util.ts")
 
+    def test_graph_builder_resolves_javascript_default_export_identifier_calls(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            src_dir = repo_path / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "main.js").write_text(
+                'import format from "./util";\n'
+                "export function helper(name) { return format(name); }\n",
+                encoding="utf-8",
+            )
+            (src_dir / "util.js").write_text(
+                "const format = (value) => value.trim();\n\n"
+                "export default format;\n",
+                encoding="utf-8",
+            )
+
+            graph = GraphBuilder().build_graph(repo_path=str(repo_path))
+
+        symbols_by_id = {symbol.id: symbol for symbol in graph.symbols}
+        files_by_id = {file_obj.id: file_obj for file_obj in graph.files}
+        helper_symbol = next(symbol for symbol in graph.symbols if symbol.qualified_name == "helper")
+        helper_calls = [
+            relation for relation in graph.relations
+            if relation.source_id == helper_symbol.id and relation.relation_type == "calls"
+        ]
+
+        self.assertEqual(len(helper_calls), 1)
+        resolved_target = symbols_by_id[helper_calls[0].target_id]
+        self.assertEqual(resolved_target.qualified_name, "format")
+        self.assertEqual(files_by_id[resolved_target.file_id].path, "src/util.js")
+
+    def test_graph_builder_resolves_javascript_anonymous_default_function_calls(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            src_dir = repo_path / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "main.js").write_text(
+                'import format from "./util";\n'
+                "export function helper(name) { return format(name); }\n",
+                encoding="utf-8",
+            )
+            (src_dir / "util.js").write_text(
+                "export default function (value) {\n"
+                "    return value.trim();\n"
+                "}\n",
+                encoding="utf-8",
+            )
+
+            graph = GraphBuilder().build_graph(repo_path=str(repo_path))
+
+        symbols_by_id = {symbol.id: symbol for symbol in graph.symbols}
+        files_by_id = {file_obj.id: file_obj for file_obj in graph.files}
+        helper_symbol = next(symbol for symbol in graph.symbols if symbol.qualified_name == "helper")
+        helper_calls = [
+            relation for relation in graph.relations
+            if relation.source_id == helper_symbol.id and relation.relation_type == "calls"
+        ]
+
+        self.assertEqual(len(helper_calls), 1)
+        resolved_target = symbols_by_id[helper_calls[0].target_id]
+        self.assertEqual(resolved_target.qualified_name, "util.default")
+        self.assertEqual(files_by_id[resolved_target.file_id].path, "src/util.js")
+
+    def test_graph_builder_resolves_javascript_named_default_export_alias_calls(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            src_dir = repo_path / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "main.js").write_text(
+                'import format from "./util";\n'
+                "export function helper(name) { return format(name); }\n",
+                encoding="utf-8",
+            )
+            (src_dir / "util.js").write_text(
+                "const format = (value) => value.trim();\n\n"
+                "export { format as default };\n",
+                encoding="utf-8",
+            )
+
+            graph = GraphBuilder().build_graph(repo_path=str(repo_path))
+
+        symbols_by_id = {symbol.id: symbol for symbol in graph.symbols}
+        files_by_id = {file_obj.id: file_obj for file_obj in graph.files}
+        helper_symbol = next(symbol for symbol in graph.symbols if symbol.qualified_name == "helper")
+        helper_calls = [
+            relation for relation in graph.relations
+            if relation.source_id == helper_symbol.id and relation.relation_type == "calls"
+        ]
+
+        self.assertEqual(len(helper_calls), 1)
+        resolved_target = symbols_by_id[helper_calls[0].target_id]
+        self.assertEqual(resolved_target.qualified_name, "format")
+        self.assertEqual(files_by_id[resolved_target.file_id].path, "src/util.js")
+
+    def test_graph_builder_resolves_javascript_anonymous_default_class_calls(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            src_dir = repo_path / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "main.js").write_text(
+                'import View from "./util";\n'
+                "export function helper() { return View(); }\n",
+                encoding="utf-8",
+            )
+            (src_dir / "util.js").write_text(
+                "export default class {\n"
+                "  render() {\n"
+                "    return 1;\n"
+                "  }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+
+            graph = GraphBuilder().build_graph(repo_path=str(repo_path))
+
+        symbols_by_id = {symbol.id: symbol for symbol in graph.symbols}
+        files_by_id = {file_obj.id: file_obj for file_obj in graph.files}
+        helper_symbol = next(symbol for symbol in graph.symbols if symbol.qualified_name == "helper")
+        helper_calls = [
+            relation for relation in graph.relations
+            if relation.source_id == helper_symbol.id and relation.relation_type == "calls"
+        ]
+
+        self.assertEqual(len(helper_calls), 1)
+        resolved_target = symbols_by_id[helper_calls[0].target_id]
+        self.assertEqual(resolved_target.qualified_name, "util.default")
+        self.assertEqual(files_by_id[resolved_target.file_id].path, "src/util.js")
+
+    def test_graph_builder_resolves_commonjs_default_require_calls(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            src_dir = repo_path / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "main.js").write_text(
+                'const format = require("./util");\n'
+                "export function helper(name) { return format(name); }\n",
+                encoding="utf-8",
+            )
+            (src_dir / "util.js").write_text(
+                "const format = (value) => value.trim();\n\n"
+                "module.exports = format;\n",
+                encoding="utf-8",
+            )
+
+            graph = GraphBuilder().build_graph(repo_path=str(repo_path))
+
+        symbols_by_id = {symbol.id: symbol for symbol in graph.symbols}
+        files_by_id = {file_obj.id: file_obj for file_obj in graph.files}
+        helper_symbol = next(symbol for symbol in graph.symbols if symbol.qualified_name == "helper")
+        helper_calls = [
+            relation for relation in graph.relations
+            if relation.source_id == helper_symbol.id and relation.relation_type == "calls"
+        ]
+
+        self.assertEqual(len(helper_calls), 1)
+        resolved_target = symbols_by_id[helper_calls[0].target_id]
+        self.assertEqual(resolved_target.qualified_name, "format")
+        self.assertEqual(files_by_id[resolved_target.file_id].path, "src/util.js")
+
+    def test_graph_builder_resolves_commonjs_named_require_calls(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            src_dir = repo_path / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "main.js").write_text(
+                'const { normalize: clean } = require("./util");\n'
+                "export function helper(name) { return clean(name); }\n",
+                encoding="utf-8",
+            )
+            (src_dir / "util.js").write_text(
+                "const normalize = (value) => value.toLowerCase();\n\n"
+                "exports.normalize = normalize;\n",
+                encoding="utf-8",
+            )
+
+            graph = GraphBuilder().build_graph(repo_path=str(repo_path))
+
+        symbols_by_id = {symbol.id: symbol for symbol in graph.symbols}
+        files_by_id = {file_obj.id: file_obj for file_obj in graph.files}
+        helper_symbol = next(symbol for symbol in graph.symbols if symbol.qualified_name == "helper")
+        helper_calls = [
+            relation for relation in graph.relations
+            if relation.source_id == helper_symbol.id and relation.relation_type == "calls"
+        ]
+
+        self.assertEqual(len(helper_calls), 1)
+        resolved_target = symbols_by_id[helper_calls[0].target_id]
+        self.assertEqual(resolved_target.qualified_name, "normalize")
+        self.assertEqual(files_by_id[resolved_target.file_id].path, "src/util.js")
+
+    def test_graph_builder_resolves_commonjs_object_export_require_calls(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            src_dir = repo_path / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "main.js").write_text(
+                'const { normalize: clean } = require("./util");\n'
+                "export function helper(name) { return clean(name); }\n",
+                encoding="utf-8",
+            )
+            (src_dir / "util.js").write_text(
+                "const normalize = (value) => value.toLowerCase();\n\n"
+                "module.exports = { normalize };\n",
+                encoding="utf-8",
+            )
+
+            graph = GraphBuilder().build_graph(repo_path=str(repo_path))
+
+        symbols_by_id = {symbol.id: symbol for symbol in graph.symbols}
+        files_by_id = {file_obj.id: file_obj for file_obj in graph.files}
+        helper_symbol = next(symbol for symbol in graph.symbols if symbol.qualified_name == "helper")
+        helper_calls = [
+            relation for relation in graph.relations
+            if relation.source_id == helper_symbol.id and relation.relation_type == "calls"
+        ]
+
+        self.assertEqual(len(helper_calls), 1)
+        resolved_target = symbols_by_id[helper_calls[0].target_id]
+        self.assertEqual(resolved_target.qualified_name, "normalize")
+        self.assertEqual(files_by_id[resolved_target.file_id].path, "src/util.js")
+
+    def test_graph_builder_resolves_commonjs_namespace_require_calls(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            src_dir = repo_path / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "main.js").write_text(
+                'const util = require("./util");\n'
+                "export function helper(name) { return util.normalize(name); }\n",
+                encoding="utf-8",
+            )
+            (src_dir / "util.js").write_text(
+                "const normalize = (value) => value.toLowerCase();\n\n"
+                "module.exports = { normalize };\n",
+                encoding="utf-8",
+            )
+
+            graph = GraphBuilder().build_graph(repo_path=str(repo_path))
+
+        symbols_by_id = {symbol.id: symbol for symbol in graph.symbols}
+        files_by_id = {file_obj.id: file_obj for file_obj in graph.files}
+        helper_symbol = next(symbol for symbol in graph.symbols if symbol.qualified_name == "helper")
+        helper_calls = [
+            relation for relation in graph.relations
+            if relation.source_id == helper_symbol.id and relation.relation_type == "calls"
+        ]
+
+        self.assertEqual(len(helper_calls), 1)
+        resolved_target = symbols_by_id[helper_calls[0].target_id]
+        self.assertEqual(resolved_target.qualified_name, "normalize")
+        self.assertEqual(files_by_id[resolved_target.file_id].path, "src/util.js")
+
+    def test_graph_builder_resolves_javascript_re_export_named_calls(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            src_dir = repo_path / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "main.js").write_text(
+                'import { format } from "./barrel";\n'
+                "export function helper(name) { return format(name); }\n",
+                encoding="utf-8",
+            )
+            (src_dir / "barrel.js").write_text(
+                'export { format } from "./util";\n',
+                encoding="utf-8",
+            )
+            (src_dir / "util.js").write_text(
+                "export function format(value) { return value.trim(); }\n",
+                encoding="utf-8",
+            )
+
+            graph = GraphBuilder().build_graph(repo_path=str(repo_path))
+
+        symbols_by_id = {symbol.id: symbol for symbol in graph.symbols}
+        files_by_id = {file_obj.id: file_obj for file_obj in graph.files}
+        helper_symbol = next(symbol for symbol in graph.symbols if symbol.qualified_name == "helper")
+        helper_calls = [
+            relation for relation in graph.relations
+            if relation.source_id == helper_symbol.id and relation.relation_type == "calls"
+        ]
+
+        self.assertEqual(len(helper_calls), 1)
+        resolved_target = symbols_by_id[helper_calls[0].target_id]
+        self.assertEqual(resolved_target.qualified_name, "format")
+        self.assertEqual(files_by_id[resolved_target.file_id].path, "src/util.js")
+
+    def test_graph_builder_resolves_javascript_re_export_default_alias_calls(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            src_dir = repo_path / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "main.js").write_text(
+                'import { View } from "./barrel";\n'
+                "export function helper() { return View(); }\n",
+                encoding="utf-8",
+            )
+            (src_dir / "barrel.js").write_text(
+                'export { default as View } from "./util";\n',
+                encoding="utf-8",
+            )
+            (src_dir / "util.js").write_text(
+                "export default function () {\n"
+                "    return 1;\n"
+                "}\n",
+                encoding="utf-8",
+            )
+
+            graph = GraphBuilder().build_graph(repo_path=str(repo_path))
+
+        symbols_by_id = {symbol.id: symbol for symbol in graph.symbols}
+        files_by_id = {file_obj.id: file_obj for file_obj in graph.files}
+        helper_symbol = next(symbol for symbol in graph.symbols if symbol.qualified_name == "helper")
+        helper_calls = [
+            relation for relation in graph.relations
+            if relation.source_id == helper_symbol.id and relation.relation_type == "calls"
+        ]
+
+        self.assertEqual(len(helper_calls), 1)
+        resolved_target = symbols_by_id[helper_calls[0].target_id]
+        self.assertEqual(resolved_target.qualified_name, "util.default")
+        self.assertEqual(files_by_id[resolved_target.file_id].path, "src/util.js")
+
     def test_graph_builder_resolves_javascript_namespace_import_calls(self) -> None:
         with TemporaryDirectory() as temp_dir:
             repo_path = Path(temp_dir)
@@ -227,6 +549,52 @@ class SummaryPipelineTests(unittest.TestCase):
             (util_dir / "Helper.java").write_text(
                 "package demo.util;\n\n"
                 "class Helper {\n"
+                "    static void format() {\n"
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+
+            graph = GraphBuilder().build_graph(repo_path=str(repo_path))
+
+        symbols_by_id = {symbol.id: symbol for symbol in graph.symbols}
+        service_run = next(symbol for symbol in graph.symbols if symbol.qualified_name == "demo.service.Service.run")
+        calls = [
+            relation for relation in graph.relations
+            if relation.source_id == service_run.id and relation.relation_type == "calls"
+        ]
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(symbols_by_id[calls[0].target_id].qualified_name, "demo.util.Helper.format")
+
+    def test_graph_builder_resolves_java_regular_import_class_calls(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            service_dir = repo_path / "src" / "demo" / "service"
+            util_dir = repo_path / "src" / "demo" / "util"
+            service_dir.mkdir(parents=True, exist_ok=True)
+            util_dir.mkdir(parents=True, exist_ok=True)
+            (service_dir / "Service.java").write_text(
+                "package demo.service;\n\n"
+                "import demo.util.Helper;\n\n"
+                "class Service {\n"
+                "    void run() {\n"
+                "        Helper.format();\n"
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            (util_dir / "Helper.java").write_text(
+                "package demo.util;\n\n"
+                "class Helper {\n"
+                "    static void format() {\n"
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            (util_dir / "OtherHelper.java").write_text(
+                "package demo.util;\n\n"
+                "class OtherHelper {\n"
                 "    static void format() {\n"
                 "    }\n"
                 "}\n",
@@ -398,6 +766,44 @@ class SummaryPipelineTests(unittest.TestCase):
         self.assertEqual(resolved_target.qualified_name, "Worker.build")
         self.assertEqual(files_by_id[resolved_target.file_id].path, "src/worker.rs")
 
+    def test_graph_builder_resolves_rust_module_qualified_type_method_calls(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            src_dir = repo_path / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "main.rs").write_text(
+                "fn run() {\n"
+                "    worker::Worker::build();\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            (src_dir / "worker.rs").write_text(
+                "pub struct Worker;\n\n"
+                "impl Worker {\n"
+                "    pub fn build() {}\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            (src_dir / "other.rs").write_text(
+                "fn build() {}\n",
+                encoding="utf-8",
+            )
+
+            graph = GraphBuilder().build_graph(repo_path=str(repo_path))
+
+        symbols_by_id = {symbol.id: symbol for symbol in graph.symbols}
+        files_by_id = {file_obj.id: file_obj for file_obj in graph.files}
+        run_symbol = next(symbol for symbol in graph.symbols if symbol.qualified_name == "run")
+        run_calls = [
+            relation for relation in graph.relations
+            if relation.source_id == run_symbol.id and relation.relation_type == "calls"
+        ]
+
+        self.assertEqual(len(run_calls), 1)
+        resolved_target = symbols_by_id[run_calls[0].target_id]
+        self.assertEqual(resolved_target.qualified_name, "Worker.build")
+        self.assertEqual(files_by_id[resolved_target.file_id].path, "src/worker.rs")
+
     def test_graph_builder_resolves_cpp_namespace_class_method_calls(self) -> None:
         with TemporaryDirectory() as temp_dir:
             repo_path = Path(temp_dir)
@@ -439,6 +845,115 @@ class SummaryPipelineTests(unittest.TestCase):
         resolved_target = symbols_by_id[run_calls[0].target_id]
         self.assertEqual(resolved_target.qualified_name, "util::Helper::format")
         self.assertEqual(files_by_id[resolved_target.file_id].path, "src/helper.cpp")
+
+    def test_graph_builder_resolves_cpp_namespace_alias_calls(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            src_dir = repo_path / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "main.cpp").write_text(
+                "namespace h = util::helpers;\n\n"
+                "int run() {\n"
+                "    return h::Formatter::format();\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            (src_dir / "helper.cpp").write_text(
+                "namespace util::helpers {\n"
+                "class Formatter {\n"
+                "public:\n"
+                "    static int format() { return 1; }\n"
+                "};\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            (src_dir / "other.cpp").write_text(
+                "int format() { return 2; }\n",
+                encoding="utf-8",
+            )
+
+            graph = GraphBuilder().build_graph(repo_path=str(repo_path))
+
+        symbols_by_id = {symbol.id: symbol for symbol in graph.symbols}
+        files_by_id = {file_obj.id: file_obj for file_obj in graph.files}
+        run_symbol = next(symbol for symbol in graph.symbols if symbol.qualified_name == "run")
+        run_calls = [
+            relation for relation in graph.relations
+            if relation.source_id == run_symbol.id and relation.relation_type == "calls"
+        ]
+
+        self.assertEqual(len(run_calls), 1)
+        resolved_target = symbols_by_id[run_calls[0].target_id]
+        self.assertEqual(resolved_target.qualified_name, "util::helpers::Formatter::format")
+        self.assertEqual(files_by_id[resolved_target.file_id].path, "src/helper.cpp")
+
+    def test_graph_builder_resolves_cpp_using_declaration_calls(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            src_dir = repo_path / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "main.cpp").write_text(
+                "using util::helpers::Formatter;\n\n"
+                "int run() {\n"
+                "    return Formatter::format();\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            (src_dir / "helper.cpp").write_text(
+                "namespace util::helpers {\n"
+                "class Formatter {\n"
+                "public:\n"
+                "    static int format() { return 1; }\n"
+                "};\n"
+                "}\n",
+                encoding="utf-8",
+            )
+
+            graph = GraphBuilder().build_graph(repo_path=str(repo_path))
+
+        symbols_by_id = {symbol.id: symbol for symbol in graph.symbols}
+        run_symbol = next(symbol for symbol in graph.symbols if symbol.qualified_name == "run")
+        run_calls = [
+            relation for relation in graph.relations
+            if relation.source_id == run_symbol.id and relation.relation_type == "calls"
+        ]
+
+        self.assertEqual(len(run_calls), 1)
+        self.assertEqual(symbols_by_id[run_calls[0].target_id].qualified_name, "util::helpers::Formatter::format")
+
+    def test_graph_builder_resolves_cpp_using_alias_calls(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            src_dir = repo_path / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "main.cpp").write_text(
+                "using Fmt = util::helpers::Formatter;\n\n"
+                "int run() {\n"
+                "    return Fmt::format();\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            (src_dir / "helper.cpp").write_text(
+                "namespace util::helpers {\n"
+                "class Formatter {\n"
+                "public:\n"
+                "    static int format() { return 1; }\n"
+                "};\n"
+                "}\n",
+                encoding="utf-8",
+            )
+
+            graph = GraphBuilder().build_graph(repo_path=str(repo_path))
+
+        symbols_by_id = {symbol.id: symbol for symbol in graph.symbols}
+        run_symbol = next(symbol for symbol in graph.symbols if symbol.qualified_name == "run")
+        run_calls = [
+            relation for relation in graph.relations
+            if relation.source_id == run_symbol.id and relation.relation_type == "calls"
+        ]
+
+        self.assertEqual(len(run_calls), 1)
+        self.assertEqual(symbols_by_id[run_calls[0].target_id].qualified_name, "util::helpers::Formatter::format")
 
     def test_repository_persists_and_updates_summaries(self) -> None:
         repository = self._build_repository()

@@ -14,6 +14,18 @@ class CDTAdapter(ParserAdapter):
 
     INCLUDE_PATTERN = re.compile(r"^\s*#\s*include\s+[<\"]([^>\"]+)[>\"]", re.MULTILINE)
     NAMESPACE_PATTERN = re.compile(r"(?:^|(?<=\n)|(?<=[{};]))\s*namespace\s+([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*\{", re.MULTILINE)
+    NAMESPACE_ALIAS_PATTERN = re.compile(
+        r"(?:^|(?<=\n)|(?<=[{};]))\s*namespace\s+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*;",
+        re.MULTILINE,
+    )
+    USING_DECLARATION_PATTERN = re.compile(
+        r"(?:^|(?<=\n)|(?<=[{};]))\s*using\s+([A-Za-z_]\w*(?:::[A-Za-z_]\w*)+)\s*;",
+        re.MULTILINE,
+    )
+    USING_ALIAS_PATTERN = re.compile(
+        r"(?:^|(?<=\n)|(?<=[{};]))\s*using\s+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*(?:::[A-Za-z_]\w*)+)\s*;",
+        re.MULTILINE,
+    )
     CLASS_PATTERN = re.compile(
         r"(?:^|(?<=\n)|(?<=[{};]))\s*(?:template\s*<[^;{}]+>\s*)?"
         r"(class|struct)\s+([A-Za-z_]\w*)\s*(?: final)?(?:\s*:[^{;]+)?\s*\{",
@@ -34,6 +46,7 @@ class CDTAdapter(ParserAdapter):
         source = Path(file_path).read_text(encoding="utf-8")
         symbols: list[Symbol] = []
         relations: list[Relation] = []
+        import_aliases = self._parse_import_aliases(source)
 
         namespace_infos = self._parse_namespaces(source)
         class_infos = self._parse_classes(source, namespace_infos, symbols)
@@ -44,6 +57,7 @@ class CDTAdapter(ParserAdapter):
             symbols=symbols,
             relations=relations,
             spans=self._build_spans(file_path, symbols),
+            import_aliases=import_aliases,
         )
 
     def supports_language(self, language: str) -> bool:
@@ -142,6 +156,18 @@ class CDTAdapter(ParserAdapter):
                     target_module_id="",
                 )
             )
+
+    @classmethod
+    def _parse_import_aliases(cls, source: str) -> dict[str, str]:
+        aliases: dict[str, str] = {}
+        for match in cls.NAMESPACE_ALIAS_PATTERN.finditer(source):
+            aliases[match.group(1)] = match.group(2)
+        for match in cls.USING_DECLARATION_PATTERN.finditer(source):
+            target = match.group(1)
+            aliases[target.split("::")[-1]] = target
+        for match in cls.USING_ALIAS_PATTERN.finditer(source):
+            aliases[match.group(1)] = match.group(2)
+        return aliases
 
     def _parse_functions(
         self,

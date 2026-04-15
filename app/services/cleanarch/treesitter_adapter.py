@@ -198,6 +198,7 @@ class TreeSitterAdapter(ParserAdapter):
         relations: list[Relation] = []
         class_ranges: list[tuple[int, int]] = []
         callable_ranges: list[tuple[str, int, int]] = []
+        module_default_name = f"{Path(file_path).stem}.default"
 
         class_pattern = re.compile(
             r"(?:^|\n)\s*(?:export\s+default\s+|export\s+)?class\s+([A-Za-z_$][\w$]*)[^{]*\{",
@@ -310,8 +311,20 @@ class TreeSitterAdapter(ParserAdapter):
             if match.group(4):
                 callable_ranges.append((name, match.end(), end_pos or match.end()))
 
+        anonymous_default_symbols, anonymous_default_calls, anonymous_default_relations = self._parse_javascript_anonymous_default_exports(
+            source=source,
+            module_default_name=module_default_name,
+        )
+        symbols.extend(anonymous_default_symbols)
+        callable_ranges.extend(anonymous_default_calls)
+        relations.extend(anonymous_default_relations)
+
         import_aliases = self._parse_javascript_import_aliases(source, file_path)
-        relations.extend(self._parse_named_exports(source, {symbol.name: symbol.qualified_name for symbol in symbols}))
+        symbol_names = {symbol.name: symbol.qualified_name for symbol in symbols}
+        relations.extend(self._parse_named_exports(source, symbol_names))
+        relations.extend(self._parse_default_exports(source, symbol_names, module_default_name))
+        relations.extend(self._parse_commonjs_exports(source, symbol_names, module_default_name))
+        relations.extend(self._parse_javascript_re_exports(source, file_path))
         relations.extend(self._parse_body_calls(source, callable_ranges, self._javascript_call_targets))
         return ParseResult(
             symbols=symbols,
@@ -536,11 +549,167 @@ class TreeSitterAdapter(ParserAdapter):
         export_pattern = re.compile(r"(?:^|\n)\s*export\s*\{([^}]+)\}", re.MULTILINE)
         for match in export_pattern.finditer(source):
             for raw_name in match.group(1).split(","):
-                name = raw_name.strip().split(" as ", 1)[0].strip()
+                item = raw_name.strip()
+                name, _, exported_as = item.partition(" as ")
+                name = name.strip()
                 if not name:
                     continue
-                relations.append(self._build_export_relation(symbol_names.get(name, name)))
+                exported_name = exported_as.strip() if exported_as else None
+                relations.append(
+                    self._build_export_relation(
+                        symbol_names.get(name, name),
+                        exported_as="default" if exported_name == "default" else None,
+                    )
+                )
         return relations
+
+    def _parse_default_exports(
+        self,
+        source: str,
+        symbol_names: dict[str, str],
+        module_default_name: str,
+    ) -> list[Relation]:
+        relations: list[Relation] = []
+        default_export_pattern = re.compile(
+            r"(?:^|\n)\s*export\s+default\s+([A-Za-z_$][\w$]*)\s*;",
+            re.MULTILINE,
+        )
+        for match in default_export_pattern.finditer(source):
+            exported_name = match.group(1)
+            target = symbol_names.get(exported_name, exported_name)
+            if exported_name not in symbol_names and exported_name != module_default_name:
+                continue
+            relations.append(self._build_export_relation(target, exported_as="default"))
+        return relations
+
+    def _parse_commonjs_exports(
+        self,
+        source: str,
+        symbol_names: dict[str, str],
+        module_default_name: str,
+    ) -> list[Relation]:
+        relations: list[Relation] = []
+
+        default_export_pattern = re.compile(
+            r"(?:^|\n)\s*module\.exports\s*=\s*([A-Za-z_$][\w$]*)\s*;",
+            re.MULTILINE,
+        )
+        for match in default_export_pattern.finditer(source):
+            exported_name = match.group(1)
+            target = symbol_names.get(exported_name, exported_name)
+            if exported_name in symbol_names or exported_name == module_default_name:
+                relations.append(self._build_export_relation(target, exported_as="default"))
+
+        named_export_pattern = re.compile(
+            r"(?:^|\n)\s*(?:module\.exports|exports)\.([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*;",
+            re.MULTILINE,
+        )
+        for match in named_export_pattern.finditer(source):
+            export_name = match.group(1)
+            target_name = match.group(2)
+            target = symbol_names.get(target_name, target_name)
+            if target_name in symbol_names:
+                relations.append(self._build_export_relation(target, exported_as=export_name))
+
+        object_export_pattern = re.compile(
+            r"(?:^|\n)\s*module\.exports\s*=\s*\{([^}]+)\}\s*;",
+            re.MULTILINE | re.DOTALL,
+        )
+        for match in object_export_pattern.finditer(source):
+            for item in match.group(1).split(","):
+                item = item.strip()
+                if not item:
+                    continue
+                export_name, _, target_name = item.partition(":")
+                export_name = export_name.strip()
+                target_name = (target_name or export_name).strip()
+                target = symbol_names.get(target_name, target_name)
+                if target_name in symbol_names:
+                    relations.append(self._build_export_relation(target, exported_as=export_name))
+
+        return relations
+
+    def _parse_javascript_re_exports(self, source: str, file_path: str) -> list[Relation]:
+        relations: list[Relation] = []
+        re_export_pattern = re.compile(
+            r"(?:^|\n)\s*export\s*\{([^}]+)\}\s*from\s*['\"]([^'\"]+)['\"]",
+            re.MULTILINE,
+        )
+        for match in re_export_pattern.finditer(source):
+            module_ref = self._module_reference(file_path, match.group(2).strip())
+            for item in match.group(1).split(","):
+                item = item.strip()
+                if not item:
+                    continue
+                imported, _, exported_as = item.partition(" as ")
+                imported_name = imported.strip()
+                exported_name = exported_as.strip() if exported_as else imported_name
+                source_ref = (
+                    f"{module_ref}.default"
+                    if imported_name == "default"
+                    else f"{module_ref}.{imported_name}"
+                )
+                relations.append(
+                    self._build_export_relation(
+                        source_ref,
+                        exported_as="default" if exported_name == "default" else exported_name,
+                    )
+                )
+        return relations
+
+    def _parse_javascript_anonymous_default_exports(
+        self,
+        *,
+        source: str,
+        module_default_name: str,
+    ) -> tuple[list[Symbol], list[tuple[str, int, int]], list[Relation]]:
+        symbols: list[Symbol] = []
+        callable_ranges: list[tuple[str, int, int]] = []
+        relations: list[Relation] = []
+
+        default_function_pattern = re.compile(
+            r"(?:^|\n)\s*export\s+default\s+(?:async\s+)?function\s*\(([^)]*)\)\s*(?::\s*[^{]+)?\{",
+            re.MULTILINE,
+        )
+        for match in default_function_pattern.finditer(source):
+            start_line = self._line_number(source, match.start())
+            end_pos = self._find_matching_brace(source, match.end() - 1)
+            end_line = self._line_number(source, end_pos) if end_pos is not None else start_line
+            symbols.append(
+                self._build_symbol(
+                    name=module_default_name,
+                    qualified_name=module_default_name,
+                    symbol_type="function",
+                    signature=f"{module_default_name}({match.group(1).strip()})",
+                    start_line=start_line,
+                    end_line=end_line,
+                )
+            )
+            callable_ranges.append((module_default_name, match.end(), end_pos or match.end()))
+            relations.append(self._build_export_relation(module_default_name, exported_as="default"))
+
+        default_class_pattern = re.compile(
+            r"(?:^|\n)\s*export\s+default\s+class\s*(?:extends\s+[^{]+)?\{",
+            re.MULTILINE,
+        )
+        for match in default_class_pattern.finditer(source):
+            start_line = self._line_number(source, match.start())
+            end_pos = self._find_matching_brace(source, match.end() - 1)
+            end_line = self._line_number(source, end_pos) if end_pos is not None else start_line
+            symbols.append(
+                self._build_symbol(
+                    name=module_default_name,
+                    qualified_name=module_default_name,
+                    symbol_type="class",
+                    signature=self._signature_from_match(source, match),
+                    start_line=start_line,
+                    end_line=end_line,
+                )
+            )
+            callable_ranges.append((module_default_name, match.end(), end_pos or match.end()))
+            relations.append(self._build_export_relation(module_default_name, exported_as="default"))
+
+        return symbols, callable_ranges, relations
 
     @staticmethod
     def _parse_javascript_import_aliases(source: str, file_path: str) -> dict[str, str]:
@@ -565,6 +734,29 @@ class TreeSitterAdapter(ParserAdapter):
             elif remainder.startswith("* as "):
                 alias = remainder.replace("* as ", "", 1).strip()
                 aliases[alias] = module_ref or alias
+        require_default_pattern = re.compile(
+            r"(?:^|\n)\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)",
+            re.MULTILINE,
+        )
+        for match in require_default_pattern.finditer(source):
+            alias = match.group(1)
+            module_ref = TreeSitterAdapter._module_reference(file_path, match.group(2).strip())
+            aliases[alias] = module_ref or alias
+
+        require_named_pattern = re.compile(
+            r"(?:^|\n)\s*(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)",
+            re.MULTILINE,
+        )
+        for match in require_named_pattern.finditer(source):
+            module_ref = TreeSitterAdapter._module_reference(file_path, match.group(2).strip())
+            for item in match.group(1).split(","):
+                item = item.strip()
+                if not item:
+                    continue
+                imported, _, local = item.partition(":")
+                imported_name = imported.strip().split(".")[-1]
+                local_name = (local or imported).strip()
+                aliases[local_name] = f"{module_ref}.{imported_name}" if module_ref else imported_name
         return aliases
 
     @staticmethod

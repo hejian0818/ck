@@ -77,7 +77,7 @@ class GraphRepository:
                         scan_time = EXCLUDED.scan_time
                     """
                 ),
-                graphcode.repo_meta.model_dump(),
+                self._repo_meta_params(graphcode),
             )
 
             for module in graphcode.modules:
@@ -566,6 +566,12 @@ class GraphRepository:
             """
         schema_path = Path(__file__).with_name("schema.sql")
         return schema_path.read_text(encoding="utf-8")
+
+    def _repo_meta_params(self, graphcode: GraphCode) -> dict[str, object]:
+        params = graphcode.repo_meta.model_dump()
+        if self.engine.dialect.name == "sqlite":
+            params["scan_time"] = graphcode.repo_meta.scan_time.isoformat()
+        return params
 
     def _load_vector_schema_statements(self) -> str:
         if self.engine.dialect.name == "sqlite":

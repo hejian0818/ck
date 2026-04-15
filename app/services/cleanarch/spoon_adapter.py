@@ -320,7 +320,7 @@ class SpoonAdapter(ParserAdapter):
             if imported.endswith(".*"):
                 continue
             local_name = imported.split(".")[-1]
-            aliases[local_name] = imported if match.group(1) else local_name
+            aliases[local_name] = imported
         return aliases
 
     @staticmethod

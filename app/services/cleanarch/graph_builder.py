@@ -46,7 +46,7 @@ class GraphBuilder:
         symbols: list[Symbol] = []
         relations: list[Relation] = []
         spans: list[Span] = []
-        export_lookup_candidates: dict[str, list[str]] = {}
+        export_lookup_specs: list[tuple[str, str, dict[str, str], dict[str, str]]] = []
 
         pending_relations: list[tuple[Relation, str, str, str, dict[str, str], dict[str, str]]] = []
 
@@ -108,11 +108,12 @@ class GraphBuilder:
                     )
                 )
             symbol_id_map = self._unique_lookup(local_symbol_candidates)
-            self._collect_export_lookup_candidates(
-                candidates=export_lookup_candidates,
+            self._collect_export_lookup_specs(
+                specs=export_lookup_specs,
                 relative_path=relative_path,
                 parse_relations=parse_result.relations,
-                symbol_id_map=symbol_id_map,
+                import_aliases=parse_result.import_aliases,
+                local_symbol_map=symbol_id_map,
             )
 
             for raw_relation in parse_result.relations:
@@ -163,7 +164,7 @@ class GraphBuilder:
             modules=list(module_map.values()),
             files=files,
             symbols=symbols,
-            extra_lookup=self._unique_lookup(export_lookup_candidates),
+            export_lookup_specs=export_lookup_specs,
         )
         graph = GraphCode(
             repo_meta=repo_meta,
@@ -255,14 +256,20 @@ class GraphBuilder:
         modules: list[Module],
         files: list[File],
         symbols: list[Symbol],
-        extra_lookup: dict[str, str] | None = None,
+        export_lookup_specs: list[tuple[str, str, dict[str, str], dict[str, str]]] | None = None,
     ) -> list[Relation]:
         lookup = cls._build_object_lookup(modules=modules, files=files, symbols=symbols)
-        if extra_lookup:
-            lookup.update(extra_lookup)
         symbols_by_id = {symbol.id: symbol for symbol in symbols}
         files_by_id = {file_obj.id: file_obj for file_obj in files}
         modules_by_id = {module.id: module for module in modules}
+        if export_lookup_specs:
+            lookup.update(
+                cls._build_export_lookup(
+                    specs=export_lookup_specs,
+                    lookup=lookup,
+                    symbols_by_id=symbols_by_id,
+                )
+            )
         resolved: list[Relation] = []
 
         for raw_relation, default_module_id, file_id, relative_path, local_symbol_map, import_aliases in pending_relations:
@@ -364,6 +371,8 @@ class GraphBuilder:
         if scope_rust:
             candidates.append(f"{scope_rust}::{symbol.name}")
             candidates.append(f"{scope_rust}::{symbol.qualified_name}")
+            if "." in symbol.qualified_name:
+                candidates.append(f"{scope_rust}::{symbol.qualified_name.replace('.', '::')}")
         return list(dict.fromkeys(candidate for candidate in candidates if candidate))
 
     @staticmethod
@@ -386,10 +395,15 @@ class GraphBuilder:
         imported = GraphBuilder._resolve_import_alias(normalized, import_aliases)
         if imported and imported in lookup:
             return lookup[imported]
+        if imported and f"{imported}.default" in lookup:
+            return lookup[f"{imported}.default"]
         if imported:
             for candidate in GraphBuilder._alternate_lookup_forms(imported):
                 if candidate in lookup:
                     return lookup[candidate]
+                default_candidate = f"{candidate}.default"
+                if default_candidate in lookup:
+                    return lookup[default_candidate]
         for separator in (".", "::", "->"):
             if separator in normalized:
                 short_name = normalized.split(separator)[-1]
@@ -449,23 +463,37 @@ class GraphBuilder:
         return default_module_id
 
     @staticmethod
-    def _collect_export_lookup_candidates(
+    def _collect_export_lookup_specs(
         *,
-        candidates: dict[str, list[str]],
+        specs: list[tuple[str, str, dict[str, str], dict[str, str]]],
         relative_path: str,
         parse_relations: list[Relation],
-        symbol_id_map: dict[str, str],
+        import_aliases: dict[str, str],
+        local_symbol_map: dict[str, str],
     ) -> None:
         stem = Path(relative_path).stem
         for relation in parse_relations:
             if relation.relation_type != "exports":
                 continue
-            symbol_id = symbol_id_map.get(relation.source_id)
-            if not symbol_id:
-                continue
             export_name = relation.target_id.removeprefix("export:")
-            if export_name == "default":
-                GraphBuilder._add_lookup_candidate(candidates, f"{stem}.default", symbol_id)
+            specs.append((f"{stem}.{export_name}", relation.source_id, dict(import_aliases), dict(local_symbol_map)))
+
+    @classmethod
+    def _build_export_lookup(
+        cls,
+        *,
+        specs: list[tuple[str, str, dict[str, str], dict[str, str]]],
+        lookup: dict[str, str],
+        symbols_by_id: dict[str, Symbol],
+    ) -> dict[str, str]:
+        candidates: dict[str, list[str]] = {}
+        for export_key, raw_source_id, import_aliases, local_symbol_map in specs:
+            local_lookup = dict(lookup)
+            local_lookup.update(local_symbol_map)
+            resolved_source_id = cls._resolve_relation_endpoint(raw_source_id, local_lookup, import_aliases)
+            if resolved_source_id in symbols_by_id:
+                cls._add_lookup_candidate(candidates, export_key, resolved_source_id)
+        return cls._unique_lookup(candidates)
 
     @staticmethod
     def _get_commit_hash(root: Path) -> str:
