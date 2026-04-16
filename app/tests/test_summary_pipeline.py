@@ -1000,6 +1000,33 @@ class SummaryPipelineTests(unittest.TestCase):
         self.assertTrue(repository.list_modules(payload.build_id))
         self.assertGreaterEqual(payload.parsed_files, 1)
 
+    def test_scan_async_queues_and_persists_repository_index(self) -> None:
+        repository = self._build_repository()
+        repo_path = str(Path("data/test_repo").resolve())
+
+        with patch("app.api.repo.get_graph_repository", return_value=repository):
+            client = TestClient(app)
+            response = client.post("/repo/scan-async", json={"repo_path": repo_path, "branch": "main"})
+
+            self.assertEqual(response.status_code, 200)
+            task_payload = response.json()
+            self.assertEqual(task_payload["status"], "queued")
+            status_response = client.get(f"/repo/tasks/{task_payload['task_id']}")
+
+        self.assertEqual(status_response.status_code, 200)
+        status_payload = status_response.json()
+        self.assertEqual(status_payload["status"], "success")
+        self.assertIsNotNone(status_payload["result"])
+        result = RepoBuildResponse.model_validate(status_payload["result"])
+        self.assertTrue(repository.list_modules(result.build_id))
+        self.assertGreaterEqual(result.parsed_files, 1)
+
+    def test_scan_async_unknown_task_returns_404(self) -> None:
+        client = TestClient(app)
+        response = client.get("/repo/tasks/missing-task")
+
+        self.assertEqual(response.status_code, 404)
+
     def test_scan_api_rejects_missing_repository_path(self) -> None:
         client = TestClient(app)
         response = client.post("/repo/scan", json={"branch": "main"})

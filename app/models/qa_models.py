@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -76,6 +77,28 @@ class RepoBuildResponse(BaseModel):
     reused_files: int = 0
     deleted_files: int = 0
     scanned_files: int = 0
+
+
+class RepoBuildTaskSubmitResponse(BaseModel):
+    """Response returned after a background index task is queued."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    status: Literal["queued"]
+
+
+class RepoBuildTaskStatusResponse(BaseModel):
+    """Current state for a background repository index task."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    status: Literal["queued", "running", "success", "failed"]
+    created_at: datetime
+    updated_at: datetime
+    result: RepoBuildResponse | None = None
+    error: str | None = None
 
 
 class SummaryResponse(BaseModel):

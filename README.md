@@ -69,6 +69,8 @@ python3 scripts/demo.py
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/repo/scan` | 扫描代码仓库，构建图索引 |
+| POST | `/repo/scan-async` | 后台扫描代码仓库，返回任务 ID |
+| GET | `/repo/tasks/{task_id}` | 查询后台索引任务状态 |
 | POST | `/qa/ask` | 交互式代码问答 |
 | POST | `/doc/plan` | 生成文档骨架 |
 | POST | `/doc/generate` | 生成完整设计文档 |
@@ -111,6 +113,36 @@ POST /repo/scan
   "base_ref": "HEAD"
 }
 ```
+
+后台索引：
+
+```json
+POST /repo/scan-async
+{
+  "repo_path": "/path/to/repo",
+  "branch": "main",
+  "incremental": true,
+  "changed_only": true,
+  "base_ref": "HEAD"
+}
+```
+
+返回：
+
+```json
+{
+  "task_id": "8ddfb0c842c449f5aa3de8f1e6c3e0ac",
+  "status": "queued"
+}
+```
+
+查询任务：
+
+```bash
+curl http://localhost:8000/repo/tasks/8ddfb0c842c449f5aa3de8f1e6c3e0ac
+```
+
+任务状态包括 `queued`、`running`、`success`、`failed`。成功后 `result` 字段包含和 `/repo/scan` 相同的构建统计。
 
 `changed_only` 会保留旧索引中的未变化文件，只重建 Git 变更文件；已删除源码文件会从图索引和向量索引中清理。
 
