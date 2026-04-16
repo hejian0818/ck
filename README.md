@@ -52,6 +52,9 @@ cp .env.example .env
 # 确保 PostgreSQL 已安装并启用 pgvector 扩展
 psql -c "CREATE DATABASE ck;"
 psql -d ck -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+# 执行数据库迁移
+uv run alembic upgrade head
 ```
 
 ### 运行
@@ -97,6 +100,12 @@ curl -X POST http://localhost:8000/repo/scan \
 ```
 
 默认 Compose 配置设置 `ENABLE_VECTOR_INDEXING=false`，避免首次扫描时下载 embedding 模型。需要 pgvector 嵌入索引时，把 `docker-compose.yml` 里的值改为 `true`，并确保容器能访问对应 embedding 模型或 OpenAI-compatible embedding 服务。
+
+API 容器启动时会自动执行：
+
+```bash
+alembic upgrade head
+```
 
 ### API 接口
 
@@ -246,6 +255,7 @@ uv run python -m pytest app/tests/ -v
 uv run ruff check app scripts
 uv run mypy
 uv run python -m compileall app scripts
+uv run alembic upgrade head
 ```
 
 当前主分支验证状态：

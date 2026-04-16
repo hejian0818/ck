@@ -1,0 +1,3 @@
+Alembic migrations for CK PostgreSQL deployments.
+
+SQLite test/demo paths still use GraphRepository.initialize_schema().
