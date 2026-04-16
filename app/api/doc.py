@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
-from app.api.dependencies import get_graph_repository, memory_manager
+from app.api.dependencies import get_graph_repository, memory_manager, require_api_key
 from app.api.errors import handle_api_error
 from app.models.doc_models import DocGenerateRequest, DocPlanRequest, DocumentResult, DocumentSkeleton, SectionPlan
 from app.services.agents.doc_agent import DocAgent
@@ -13,7 +13,7 @@ from app.services.review.doc_reviewer import DocumentReviewer
 router = APIRouter(prefix="/doc", tags=["doc"])
 
 
-@router.post("/plan", response_model=DocumentSkeleton)
+@router.post("/plan", response_model=DocumentSkeleton, dependencies=[Depends(require_api_key)])
 def plan_document(request: DocPlanRequest) -> DocumentSkeleton:
     """Plan a document skeleton for a repository."""
 
@@ -29,7 +29,7 @@ def plan_document(request: DocPlanRequest) -> DocumentSkeleton:
         handle_api_error(exc)
 
 
-@router.post("/generate", response_model=DocumentResult)
+@router.post("/generate", response_model=DocumentResult, dependencies=[Depends(require_api_key)])
 def generate_document(request: DocGenerateRequest) -> DocumentResult:
     """Generate a document result from a repository graph."""
 

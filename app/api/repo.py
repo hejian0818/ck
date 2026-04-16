@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
-from app.api.dependencies import get_graph_repository
+from app.api.dependencies import get_graph_repository, require_api_key
 from app.api.errors import handle_api_error, validate_repo_path
 from app.core.config import settings
 from app.models.qa_models import (
@@ -22,7 +22,7 @@ from app.storage.vector_store import VectorStore
 router = APIRouter(prefix="/repo", tags=["repo"])
 
 
-@router.post("/build-index", response_model=RepoBuildResponse)
+@router.post("/build-index", response_model=RepoBuildResponse, dependencies=[Depends(require_api_key)])
 def build_index(request: RepoBuildRequest) -> RepoBuildResponse:
     """Build and persist a repository index."""
 
@@ -70,14 +70,14 @@ def _build_and_persist(request: RepoBuildRequest) -> RepoBuildResponse:
     )
 
 
-@router.post("/scan", response_model=RepoBuildResponse)
+@router.post("/scan", response_model=RepoBuildResponse, dependencies=[Depends(require_api_key)])
 def scan_repo(request: RepoBuildRequest) -> RepoBuildResponse:
     """Alias for building and persisting a repository index."""
 
     return build_index(request)
 
 
-@router.post("/scan-async", response_model=RepoBuildTaskSubmitResponse)
+@router.post("/scan-async", response_model=RepoBuildTaskSubmitResponse, dependencies=[Depends(require_api_key)])
 def scan_repo_async(request: RepoBuildRequest, background_tasks: BackgroundTasks) -> RepoBuildTaskSubmitResponse:
     """Queue a repository index build in the background."""
 

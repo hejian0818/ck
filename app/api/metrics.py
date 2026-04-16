@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.api.dependencies import require_api_key
 from app.core.metrics import metrics
 
 router = APIRouter(prefix="/metrics", tags=["metrics"])
@@ -15,7 +16,7 @@ def get_metrics() -> dict:
     return metrics.snapshot()
 
 
-@router.post("/reset")
+@router.post("/reset", dependencies=[Depends(require_api_key)])
 def reset_metrics() -> dict[str, str]:
     """Reset all metrics."""
     metrics.reset()
