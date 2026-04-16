@@ -17,6 +17,25 @@ class RepoScannerTests(unittest.TestCase):
         self.assertIn("web/api.py", files)
         self.assertNotIn("README.md", files)
 
+    def test_scan_repository_skips_files_above_byte_limit(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            (repo_path / "small.py").write_text("def small():\n    return 1\n", encoding="utf-8")
+            (repo_path / "large.py").write_text("x = '" + ("a" * 64) + "'\n", encoding="utf-8")
+
+            files = RepoScanner(max_file_bytes=32).scan_repository(str(repo_path))
+
+        self.assertEqual(files, ["small.py"])
+
+    def test_scan_repository_rejects_file_count_above_limit(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            (repo_path / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+            (repo_path / "b.py").write_text("def b():\n    return 1\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "exceeded file limit"):
+                RepoScanner(max_files=1).scan_repository(str(repo_path))
+
     def test_scan_changed_files_returns_supported_changed_sources(self) -> None:
         with TemporaryDirectory() as temp_dir:
             repo_path = Path(temp_dir)
@@ -35,6 +54,32 @@ class RepoScannerTests(unittest.TestCase):
             files = RepoScanner().scan_changed_files(str(repo_path), base_ref="HEAD")
 
         self.assertEqual(files, ["main.py", "util.js"])
+
+    def test_scan_changed_files_rejects_file_count_above_limit(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            subprocess.run(["git", "-C", str(repo_path), "init"], check=True, capture_output=True, text=True)
+            subprocess.run(
+                ["git", "-C", str(repo_path), "config", "user.name", "CK Test"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo_path), "config", "user.email", "ck@example.com"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            (repo_path / "base.py").write_text("def base():\n    return 1\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo_path), "add", "."], check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo_path), "commit", "-m", "init"], check=True, capture_output=True, text=True)
+
+            (repo_path / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+            (repo_path / "b.py").write_text("def b():\n    return 1\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "exceeded file limit"):
+                RepoScanner(max_files=1).scan_changed_files(str(repo_path), base_ref="HEAD")
 
     def test_inspect_changes_reports_deleted_supported_sources(self) -> None:
         with TemporaryDirectory() as temp_dir:

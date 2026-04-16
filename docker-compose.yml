@@ -29,6 +29,8 @@ services:
       LLM_API_KEY: dummy
       LLM_MODEL: qwen2.5-coder:7b
       REPO_SCAN_ALLOWED_ROOTS: /workspace/repos:/app/data
+      REPO_SCAN_MAX_FILES: "5000"
+      REPO_SCAN_MAX_FILE_BYTES: "1000000"
     ports:
       - "8000:8000"
     volumes:

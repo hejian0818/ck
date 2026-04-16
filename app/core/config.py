@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     LLM_MAX_RETRIES: int = Field(default=3)
     LLM_TIMEOUT: int = Field(default=30)
     REPO_SCAN_ALLOWED_ROOTS: str = Field(default="")
+    REPO_SCAN_MAX_FILES: int = Field(default=5000)
+    REPO_SCAN_MAX_FILE_BYTES: int = Field(default=1_000_000)
 
 
 @lru_cache

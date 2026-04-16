@@ -238,6 +238,9 @@ Memory 系统: Anchor Memory / Retrieval Memory / Focus Memory / Task Memory
 | `CACHE_EMBEDDING_SIZE` | `1000` | 嵌入缓存大小 |
 | `CACHE_GRAPH_TTL` | `60` | 图查询缓存 TTL（秒） |
 | `LOG_LEVEL` | `INFO` | 日志级别 |
+| `REPO_SCAN_ALLOWED_ROOTS` | `""` | 允许扫描的本地根路径，多个路径用 `:` 分隔 |
+| `REPO_SCAN_MAX_FILES` | `5000` | 单次扫描允许的最大源码文件数，`0` 表示不限制 |
+| `REPO_SCAN_MAX_FILE_BYTES` | `1000000` | 单个源码文件最大字节数，超过会跳过，`0` 表示不限制 |
 
 所有配置项支持通过环境变量或 `.env` 文件覆盖。
 

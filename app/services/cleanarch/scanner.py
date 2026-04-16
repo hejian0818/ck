@@ -5,6 +5,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from app.core.config import settings
+
 
 class RepoScanner:
     """Scan repositories and return supported source files."""
@@ -61,6 +63,10 @@ class RepoScanner:
         ".hpp",
     }
 
+    def __init__(self, max_files: int | None = None, max_file_bytes: int | None = None) -> None:
+        self.max_files = settings.REPO_SCAN_MAX_FILES if max_files is None else max_files
+        self.max_file_bytes = settings.REPO_SCAN_MAX_FILE_BYTES if max_file_bytes is None else max_file_bytes
+
     def scan_repository(self, repo_path: str) -> list[str]:
         """Return relative source file paths under the repository."""
 
@@ -70,13 +76,10 @@ class RepoScanner:
         for path in root.rglob("*"):
             if path.is_dir():
                 continue
-            if self._is_ignored(root, path):
-                continue
-            if path.suffix.lower() not in self.SUPPORTED_EXTENSIONS:
-                continue
-            if self._looks_binary(path):
+            if not self._is_supported_path(root, path):
                 continue
             results.append(path.relative_to(root).as_posix())
+            self._enforce_file_limit(results)
 
         return sorted(results)
 
@@ -135,6 +138,7 @@ class RepoScanner:
                     deleted_files.append(normalized_path)
                 else:
                     changed_files.append(normalized_path)
+                    self._enforce_file_limit(changed_files)
 
         for raw_path in untracked.stdout.splitlines():
             relative_path = raw_path.strip()
@@ -143,6 +147,7 @@ class RepoScanner:
             absolute_path = root / relative_path
             if self._is_supported_path(root, absolute_path):
                 changed_files.append(Path(relative_path).as_posix())
+                self._enforce_file_limit(changed_files)
         return sorted(dict.fromkeys(changed_files)), sorted(dict.fromkeys(deleted_files))
 
     def _is_supported_path(self, root: Path, path: Path, *, allow_missing: bool = False) -> bool:
@@ -152,9 +157,17 @@ class RepoScanner:
             return False
         if path.suffix.lower() not in self.SUPPORTED_EXTENSIONS:
             return False
+        if not allow_missing and self.max_file_bytes > 0 and path.stat().st_size > self.max_file_bytes:
+            return False
         if not allow_missing and self._looks_binary(path):
             return False
         return True
+
+    def _enforce_file_limit(self, files: list[str]) -> None:
+        if self.max_files > 0 and len(files) > self.max_files:
+            raise ValueError(
+                f"Repository scan exceeded file limit: {len(files)} files found, max is {self.max_files}"
+            )
 
     def _is_ignored(self, root: Path, path: Path) -> bool:
         relative_parts = path.relative_to(root).parts
