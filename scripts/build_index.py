@@ -23,6 +23,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo-path", required=True, help="Path to repository")
     parser.add_argument("--branch", default="main", help="Repository branch")
     parser.add_argument("--no-incremental", action="store_true", help="Disable incremental reuse of unchanged files")
+    parser.add_argument("--changed-only", action="store_true", help="Only scan files changed since base ref")
+    parser.add_argument("--base-ref", default="HEAD", help="Git base ref used by --changed-only")
     return parser.parse_args()
 
 
@@ -45,10 +47,17 @@ def main() -> None:
         if previous_repo_id is not None:
             previous_graph = repository.load_graphcode(previous_repo_id)
 
+    file_paths = None
+    deleted_paths = None
+    if args.changed_only:
+        file_paths, deleted_paths = graph_builder.scanner.inspect_changes(args.repo_path, base_ref=args.base_ref)
+
     graph = graph_builder.build_graph(
         repo_path=args.repo_path,
         branch=args.branch,
         previous_graph=previous_graph,
+        file_paths=file_paths,
+        deleted_paths=deleted_paths,
     )
     repository.save_graphcode(graph)
     print(f"repo_id={graph.repo_meta.repo_id}")
@@ -56,7 +65,8 @@ def main() -> None:
     print(
         "incremental="
         f"{graph_builder.last_build_stats['incremental']} parsed={graph_builder.last_build_stats['parsed_files']} "
-        f"reused={graph_builder.last_build_stats['reused_files']} deleted={graph_builder.last_build_stats['deleted_files']}"
+        f"reused={graph_builder.last_build_stats['reused_files']} deleted={graph_builder.last_build_stats['deleted_files']} "
+        f"scanned={graph_builder.last_build_stats['scanned_files']}"
     )
 
 

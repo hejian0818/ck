@@ -60,6 +60,8 @@ class RepoBuildRequest(BaseModel):
     repo_path: str
     branch: str = "main"
     incremental: bool = True
+    changed_only: bool = False
+    base_ref: str = "HEAD"
 
 
 class RepoBuildResponse(BaseModel):
@@ -73,6 +75,7 @@ class RepoBuildResponse(BaseModel):
     parsed_files: int = 0
     reused_files: int = 0
     deleted_files: int = 0
+    scanned_files: int = 0
 
 
 class SummaryResponse(BaseModel):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 
@@ -78,6 +79,82 @@ class RepoScanner:
             results.append(path.relative_to(root).as_posix())
 
         return sorted(results)
+
+    def scan_changed_files(self, repo_path: str, base_ref: str = "HEAD") -> list[str]:
+        """Return supported changed source files relative to the repository root."""
+
+        changed_files, _ = self.inspect_changes(repo_path, base_ref=base_ref)
+        return changed_files
+
+    def inspect_changes(self, repo_path: str, base_ref: str = "HEAD") -> tuple[list[str], list[str]]:
+        """Return changed and deleted supported source files relative to the repository root."""
+
+        root = Path(repo_path).resolve()
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(root), "diff", "--name-status", base_ref],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            if base_ref != "HEAD":
+                try:
+                    result = subprocess.run(
+                        ["git", "-C", str(root), "diff", "--name-status", "HEAD"],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+                except (OSError, subprocess.CalledProcessError) as fallback_exc:
+                    raise ValueError(f"Failed to inspect changed files from {base_ref}") from fallback_exc
+            else:
+                raise ValueError(f"Failed to inspect changed files from {base_ref}") from exc
+
+        untracked = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--others", "--exclude-standard"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        changed_files: list[str] = []
+        deleted_files: list[str] = []
+        for raw_line in result.stdout.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            status, _, relative_path = line.partition("\t")
+            relative_path = relative_path.strip()
+            if not relative_path:
+                continue
+            normalized_path = Path(relative_path).as_posix()
+            absolute_path = root / normalized_path
+            if self._is_supported_path(root, absolute_path, allow_missing=status.startswith("D")):
+                if status.startswith("D"):
+                    deleted_files.append(normalized_path)
+                else:
+                    changed_files.append(normalized_path)
+
+        for raw_path in untracked.stdout.splitlines():
+            relative_path = raw_path.strip()
+            if not relative_path:
+                continue
+            absolute_path = root / relative_path
+            if self._is_supported_path(root, absolute_path):
+                changed_files.append(Path(relative_path).as_posix())
+        return sorted(dict.fromkeys(changed_files)), sorted(dict.fromkeys(deleted_files))
+
+    def _is_supported_path(self, root: Path, path: Path, *, allow_missing: bool = False) -> bool:
+        if not allow_missing and (not path.exists() or path.is_dir()):
+            return False
+        if self._is_ignored(root, path):
+            return False
+        if path.suffix.lower() not in self.SUPPORTED_EXTENSIONS:
+            return False
+        if not allow_missing and self._looks_binary(path):
+            return False
+        return True
 
     def _is_ignored(self, root: Path, path: Path) -> bool:
         relative_parts = path.relative_to(root).parts

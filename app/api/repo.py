@@ -37,10 +37,17 @@ def build_index(request: RepoBuildRequest) -> RepoBuildResponse:
             if previous_repo_id is not None:
                 previous_graph = repository.load_graphcode(previous_repo_id)
 
+        file_paths = None
+        deleted_paths = None
+        if request.changed_only:
+            file_paths, deleted_paths = graph_builder.scanner.inspect_changes(repo_path, base_ref=request.base_ref)
+
         graph = graph_builder.build_graph(
             repo_path=repo_path,
             branch=request.branch,
             previous_graph=previous_graph,
+            file_paths=file_paths,
+            deleted_paths=deleted_paths,
         )
         repository.save_graphcode(graph)
     except Exception as exc:  # pragma: no cover

@@ -42,11 +42,29 @@ class GraphBuilder:
             "deleted_files": 0,
         }
 
-    def build_graph(self, repo_path: str, branch: str = "main", previous_graph: GraphCode | None = None) -> GraphCode:
+    def build_graph(
+        self,
+        repo_path: str,
+        branch: str = "main",
+        previous_graph: GraphCode | None = None,
+        file_paths: list[str] | None = None,
+        deleted_paths: list[str] | None = None,
+    ) -> GraphCode:
         """Build a graph representation from a repository."""
 
         root = Path(repo_path).resolve()
-        file_paths = self.scanner.scan_repository(str(root))
+        if file_paths is None:
+            scanned_file_paths = self.scanner.scan_repository(str(root))
+        else:
+            scanned_file_paths = file_paths
+        scanned_file_paths = sorted(dict.fromkeys(scanned_file_paths))
+        partial_rebuild = file_paths is not None
+        deleted_path_set = set(deleted_paths or [])
+        if partial_rebuild and previous_graph is not None:
+            previous_file_paths = {file_obj.path for file_obj in previous_graph.files}
+            file_paths = sorted((previous_file_paths | set(scanned_file_paths)) - deleted_path_set)
+        else:
+            file_paths = scanned_file_paths
         module_map: dict[str, Module] = {}
         files: list[File] = []
         symbols: list[Symbol] = []
@@ -64,18 +82,19 @@ class GraphBuilder:
             previous_relations_by_file = self._group_relations_by_file(previous_graph.relations, previous_graph.symbols)
         previous_file_paths = set(previous_files)
         current_file_paths = set(file_paths)
+        scanned_file_path_set = set(scanned_file_paths)
         self.last_build_stats = {
             "incremental": previous_graph is not None,
             "parsed_files": 0,
             "reused_files": 0,
-            "deleted_files": len(previous_file_paths - current_file_paths),
+            "deleted_files": len((previous_file_paths - current_file_paths) | deleted_path_set),
+            "scanned_files": len(scanned_file_path_set - deleted_path_set),
         }
 
         pending_relations: list[tuple[Relation, str, str, str, dict[str, str], dict[str, str]]] = []
 
         for index, relative_path in enumerate(file_paths, start=1):
             absolute_path = root / relative_path
-            content_hash = self._hash_file(absolute_path)
             module_name, module_path = self._infer_module(relative_path, root.name)
             module = module_map.setdefault(
                 module_name,
@@ -86,6 +105,16 @@ class GraphBuilder:
                     metadata={},
                 ),
             )
+            previous_file = previous_files.get(relative_path)
+            if partial_rebuild and relative_path not in scanned_file_path_set and previous_file is not None:
+                files.append(previous_file)
+                symbols.extend(previous_symbols_by_file.get(previous_file.id, []))
+                spans.extend(previous_spans_by_file.get(previous_file.id, []))
+                reused_relations.extend(previous_relations_by_file.get(previous_file.id, []))
+                self.last_build_stats["reused_files"] += 1
+                continue
+
+            content_hash = self._hash_file(absolute_path)
             language = self.parser_factory.detect_language(relative_path)
             line_count = self._count_lines(absolute_path)
             file_id = self._build_file_id(relative_path)
@@ -99,7 +128,6 @@ class GraphBuilder:
                 start_line=1,
                 end_line=line_count,
             )
-            previous_file = previous_files.get(relative_path)
             if previous_file is not None and previous_file.content_hash == content_hash:
                 files.append(file_obj.model_copy(update={"summary": previous_file.summary}))
                 spans.append(
@@ -252,6 +280,9 @@ class GraphBuilder:
                     }
                 },
             )
+            stale_embedding_ids = self._stale_object_ids(previous_graph, enriched_graph)
+            if stale_embedding_ids:
+                self.vector_store.delete_embeddings(enriched_graph.repo_meta.repo_id, stale_embedding_ids)
             embeddings = self.embedding_builder.build_embeddings(enriched_graph)
             self.vector_store.save_embeddings(embeddings)
             logger.info(
@@ -266,6 +297,25 @@ class GraphBuilder:
             )
 
         return enriched_graph
+
+    @staticmethod
+    def _stale_object_ids(previous_graph: GraphCode | None, current_graph: GraphCode) -> list[str]:
+        """Return object ids that existed in the old graph but not the current graph."""
+
+        if previous_graph is None:
+            return []
+        previous_ids = GraphBuilder._graph_object_ids(previous_graph)
+        current_ids = GraphBuilder._graph_object_ids(current_graph)
+        return sorted(previous_ids - current_ids)
+
+    @staticmethod
+    def _graph_object_ids(graph: GraphCode) -> set[str]:
+        return {
+            *[module.id for module in graph.modules],
+            *[file_obj.id for file_obj in graph.files],
+            *[symbol.id for symbol in graph.symbols],
+            *[relation.id for relation in graph.relations],
+        }
 
     @staticmethod
     def _infer_module(relative_path: str, repo_name: str) -> tuple[str, str]:

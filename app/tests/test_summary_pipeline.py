@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -1083,6 +1084,171 @@ class SummaryPipelineTests(unittest.TestCase):
         self.assertTrue(payload.incremental)
         self.assertEqual(payload.reused_files, 1)
         self.assertEqual(payload.parsed_files, 1)
+
+    def test_scan_api_changed_only_scans_git_diff(self) -> None:
+        repository = self._build_repository()
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            subprocess.run(["git", "-C", str(repo_path), "init"], check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo_path), "config", "user.name", "CK Test"], check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo_path), "config", "user.email", "ck@example.com"], check=True, capture_output=True, text=True)
+            src_dir = repo_path / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "main.py").write_text(
+                "from util import format_name\n\n"
+                "def helper(name):\n"
+                "    return format_name(name)\n",
+                encoding="utf-8",
+            )
+            (src_dir / "util.py").write_text(
+                "def format_name(value):\n"
+                "    return value.strip()\n",
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "-C", str(repo_path), "add", "."], check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo_path), "commit", "-m", "init"], check=True, capture_output=True, text=True)
+
+            (src_dir / "util.py").write_text(
+                "def format_name(value):\n"
+                "    return value.upper()\n",
+                encoding="utf-8",
+            )
+
+            with patch("app.api.repo.get_graph_repository", return_value=repository):
+                client = TestClient(app)
+                response = client.post(
+                    "/repo/scan",
+                    json={
+                        "repo_path": str(repo_path),
+                        "branch": "main",
+                        "incremental": False,
+                        "changed_only": True,
+                        "base_ref": "HEAD",
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        payload = RepoBuildResponse.model_validate(response.json())
+        self.assertEqual(payload.scanned_files, 1)
+        self.assertEqual(payload.parsed_files, 1)
+
+    def test_scan_api_changed_only_preserves_unchanged_files(self) -> None:
+        repository = self._build_repository()
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            subprocess.run(["git", "-C", str(repo_path), "init"], check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo_path), "config", "user.name", "CK Test"], check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo_path), "config", "user.email", "ck@example.com"], check=True, capture_output=True, text=True)
+            src_dir = repo_path / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "main.py").write_text(
+                "from util import format_name\n\n"
+                "def helper(name):\n"
+                "    return format_name(name)\n",
+                encoding="utf-8",
+            )
+            (src_dir / "util.py").write_text(
+                "def format_name(value):\n"
+                "    return value.strip()\n",
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "-C", str(repo_path), "add", "."], check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo_path), "commit", "-m", "init"], check=True, capture_output=True, text=True)
+
+            with patch("app.api.repo.get_graph_repository", return_value=repository):
+                client = TestClient(app)
+                first_response = client.post("/repo/scan", json={"repo_path": str(repo_path), "branch": "main"})
+                self.assertEqual(first_response.status_code, 200)
+
+                (src_dir / "util.py").write_text(
+                    "def format_name(value):\n"
+                    "    return value.upper()\n",
+                    encoding="utf-8",
+                )
+                second_response = client.post(
+                    "/repo/scan",
+                    json={
+                        "repo_path": str(repo_path),
+                        "branch": "main",
+                        "incremental": True,
+                        "changed_only": True,
+                        "base_ref": "HEAD",
+                    },
+                )
+
+        self.assertEqual(second_response.status_code, 200)
+        payload = RepoBuildResponse.model_validate(second_response.json())
+        self.assertEqual(payload.scanned_files, 1)
+        self.assertEqual(payload.parsed_files, 1)
+        self.assertEqual(payload.reused_files, 1)
+        self.assertEqual({file_obj.path for file_obj in repository.list_files(payload.build_id)}, {"src/main.py", "src/util.py"})
+
+    def test_scan_api_changed_only_removes_deleted_files(self) -> None:
+        repository = self._build_repository()
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            subprocess.run(["git", "-C", str(repo_path), "init"], check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo_path), "config", "user.name", "CK Test"], check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo_path), "config", "user.email", "ck@example.com"], check=True, capture_output=True, text=True)
+            src_dir = repo_path / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "main.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
+            (src_dir / "old.py").write_text("def old():\n    return 1\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo_path), "add", "."], check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo_path), "commit", "-m", "init"], check=True, capture_output=True, text=True)
+
+            with patch("app.api.repo.get_graph_repository", return_value=repository):
+                client = TestClient(app)
+                first_response = client.post("/repo/scan", json={"repo_path": str(repo_path), "branch": "main"})
+                self.assertEqual(first_response.status_code, 200)
+
+                (src_dir / "old.py").unlink()
+                second_response = client.post(
+                    "/repo/scan",
+                    json={
+                        "repo_path": str(repo_path),
+                        "branch": "main",
+                        "incremental": True,
+                        "changed_only": True,
+                        "base_ref": "HEAD",
+                    },
+                )
+
+        self.assertEqual(second_response.status_code, 200)
+        payload = RepoBuildResponse.model_validate(second_response.json())
+        self.assertEqual(payload.scanned_files, 0)
+        self.assertEqual(payload.deleted_files, 1)
+        self.assertEqual({file_obj.path for file_obj in repository.list_files(payload.build_id)}, {"src/main.py"})
+
+    def test_graph_builder_deletes_stale_embeddings_incrementally(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            src_dir = repo_path / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "main.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
+            (src_dir / "old.py").write_text("def old():\n    return 1\n", encoding="utf-8")
+
+            initial_graph = GraphBuilder().build_graph(repo_path=str(repo_path))
+            old_file = next(file_obj for file_obj in initial_graph.files if file_obj.path == "src/old.py")
+            old_symbol = next(symbol for symbol in initial_graph.symbols if symbol.file_id == old_file.id)
+
+            (src_dir / "old.py").unlink()
+            embedding_builder = Mock()
+            embedding_builder.build_embeddings.return_value = []
+            vector_store = Mock()
+            GraphBuilder(embedding_builder=embedding_builder, vector_store=vector_store).build_graph(
+                repo_path=str(repo_path),
+                previous_graph=initial_graph,
+                file_paths=[],
+                deleted_paths=["src/old.py"],
+            )
+
+        vector_store.delete_embeddings.assert_called_once()
+        repo_id, object_ids = vector_store.delete_embeddings.call_args.args
+        self.assertEqual(repo_id, initial_graph.repo_meta.repo_id)
+        self.assertIn(old_file.id, object_ids)
+        self.assertIn(old_symbol.id, object_ids)
+        vector_store.save_embeddings.assert_called_once_with([])
 
 
 if __name__ == "__main__":
