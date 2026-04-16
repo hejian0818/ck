@@ -79,6 +79,7 @@ docker compose up --build
 
 ```bash
 curl http://localhost:8000/health
+curl http://localhost:8000/ready
 ```
 
 Compose 会把当前仓库只读挂载到容器内：
@@ -121,6 +122,7 @@ alembic upgrade head
 | GET | `/metrics` | 获取运行时指标 |
 | POST | `/metrics/reset` | 重置指标 |
 | GET | `/health` | 健康检查 |
+| GET | `/ready` | 就绪检查，验证数据库连接和基础 schema |
 
 ### 索引构建
 

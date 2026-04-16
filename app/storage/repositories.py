@@ -708,6 +708,26 @@ class GraphRepository:
         ).fetchall()
         return {row[0] for row in rows}
 
+    def list_table_names(self, connection) -> list[str]:
+        """Return table names visible to the current database connection."""
+
+        if self.engine.dialect.name == "sqlite":
+            rows = connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type = 'table'")
+            ).fetchall()
+            return [row[0] for row in rows]
+
+        rows = connection.execute(
+            text(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = current_schema()
+                """
+            )
+        ).fetchall()
+        return [row[0] for row in rows]
+
     @staticmethod
     def _resolve_summary_table(object_type: str) -> str:
         table_map = {

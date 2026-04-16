@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from fastapi import FastAPI
+from sqlalchemy import text
 
+from app.api.dependencies import get_graph_repository
 from app.api.doc import router as doc_router
 from app.api.metrics import router as metrics_router
 from app.api.qa import router as qa_router
@@ -24,3 +26,20 @@ def health() -> dict[str, str]:
     """Basic health endpoint."""
 
     return {"status": "ok"}
+
+
+@app.get("/ready")
+def readiness() -> dict[str, object]:
+    """Readiness endpoint that checks database connectivity and base schema."""
+
+    repository = get_graph_repository()
+    with repository.engine.connect() as connection:
+        connection.execute(text("SELECT 1"))
+        required_tables = {"repos", "modules", "files", "symbols", "relations", "spans"}
+        existing_tables = set(repository.list_table_names(connection))
+    missing_tables = sorted(required_tables - existing_tables)
+    return {
+        "status": "ready" if not missing_tables else "degraded",
+        "database": "ok",
+        "missing_tables": missing_tables,
+    }
