@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from app.api.dependencies import get_graph_repository, require_api_key
-from app.api.errors import handle_api_error, validate_repo_path
+from app.api.errors import error_detail, handle_api_error, validate_repo_path
 from app.core.config import settings
 from app.models.qa_models import (
     RepoBuildRequest,
@@ -97,7 +97,7 @@ def get_index_task(task_id: str) -> RepoBuildTaskStatusResponse:
 
     task = index_task_manager.get_task(task_id)
     if task is None:
-        raise HTTPException(status_code=404, detail="Index task not found")
+        raise HTTPException(status_code=404, detail=error_detail("task_not_found", "Index task not found"))
     return task
 
 
@@ -119,9 +119,9 @@ def get_object_summary(object_type: str, object_id: str) -> SummaryResponse:
     try:
         summary = repository.get_summary(object_type, object_id)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=error_detail("bad_request", str(exc))) from exc
 
     if summary is None:
-        raise HTTPException(status_code=404, detail="Summary not found")
+        raise HTTPException(status_code=404, detail=error_detail("summary_not_found", "Summary not found"))
 
     return SummaryResponse(object_type=object_type, object_id=object_id, summary=summary)

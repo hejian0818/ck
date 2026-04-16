@@ -1026,6 +1026,7 @@ class SummaryPipelineTests(unittest.TestCase):
         response = client.get("/repo/tasks/missing-task")
 
         self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"]["code"], "task_not_found")
 
     def test_scan_api_rejects_missing_repository_path(self) -> None:
         client = TestClient(app)
@@ -1038,6 +1039,7 @@ class SummaryPipelineTests(unittest.TestCase):
         response = client.post("/repo/scan", json={"repo_path": "/path/that/does/not/exist", "branch": "main"})
 
         self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"]["code"], "not_found")
 
     def test_graph_builder_reuses_unchanged_files_incrementally(self) -> None:
         with TemporaryDirectory() as temp_dir:

@@ -24,6 +24,7 @@ class ApiAuthTests(unittest.TestCase):
             response = client.post("/metrics/reset")
 
         self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["detail"]["code"], "unauthorized")
 
     def test_mutating_endpoint_accepts_x_api_key(self) -> None:
         with patch("app.api.dependencies.settings.API_KEY", "secret"):

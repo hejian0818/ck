@@ -10,20 +10,26 @@ from fastapi import HTTPException
 from app.core.config import settings
 
 
+def error_detail(code: str, message: str) -> dict[str, str]:
+    """Build a stable API error detail payload."""
+
+    return {"code": code, "message": message}
+
+
 def handle_api_error(exc: Exception) -> NoReturn:
     """Convert internal exceptions to stable HTTP errors."""
 
     if isinstance(exc, HTTPException):
         raise exc
     if isinstance(exc, FileNotFoundError):
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=error_detail("not_found", str(exc))) from exc
     if isinstance(exc, NotADirectoryError):
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=error_detail("invalid_repository_path", str(exc))) from exc
     if isinstance(exc, PermissionError):
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+        raise HTTPException(status_code=403, detail=error_detail("forbidden_repository_path", str(exc))) from exc
     if isinstance(exc, ValueError):
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=error_detail("bad_request", str(exc))) from exc
+    raise HTTPException(status_code=500, detail=error_detail("internal_error", str(exc))) from exc
 
 
 def validate_repo_path(repo_path: str) -> str:

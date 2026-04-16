@@ -7,6 +7,7 @@ from functools import lru_cache
 
 from fastapi import Header, HTTPException, status
 
+from app.api.errors import error_detail
 from app.core.config import settings
 from app.services.memory.memory_manager import MemoryManager
 from app.storage.repositories import GraphRepository
@@ -37,7 +38,7 @@ def require_api_key(
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid or missing API key",
+        detail=error_detail("unauthorized", "Invalid or missing API key"),
         headers={"WWW-Authenticate": "Bearer"},
     )
 
