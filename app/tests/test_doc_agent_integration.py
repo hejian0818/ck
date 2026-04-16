@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import unittest
 
-from app.models.doc_models import DocumentSkeleton, SectionContent, SectionPlan
+from app.models.doc_models import DocumentSkeleton, SectionPlan
 from app.models.graph_objects import File, Module, Relation, Symbol
-from app.services.agents.doc_agent import DocAgent, DeterministicDocLLMClient, OpenAICompatibleDocLLMClient, SkeletonPlanner
+from app.services.agents.doc_agent import (
+    DeterministicDocLLMClient,
+    DocAgent,
+    OpenAICompatibleDocLLMClient,
+    SkeletonPlanner,
+)
 from app.services.memory.memory_manager import MemoryManager
 from app.services.retrieval.doc_retriever import DocRetriever
 from app.services.review.doc_reviewer import DocumentReviewer
@@ -140,7 +145,7 @@ class TaskMemoryIntegrationTests(unittest.TestCase):
         skeleton = _make_skeleton()
 
         # First run: generate normally
-        result1 = agent.generate("test-repo", skeleton=skeleton)
+        agent.generate("test-repo", skeleton=skeleton)
 
         # Manually set task memory back to in_progress to simulate resume
         task = self.memory_manager.get_task_memory("doc_generation", "test-repo")

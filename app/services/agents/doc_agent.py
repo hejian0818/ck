@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 import re
 import time
-from time import perf_counter
 from pathlib import Path
+from time import perf_counter
 from typing import TYPE_CHECKING, Protocol
 
 from app.core.config import settings
@@ -26,7 +26,7 @@ except ImportError:  # pragma: no cover
 
 if TYPE_CHECKING:
     from app.services.memory.memory_manager import MemoryManager
-    from app.services.review.doc_reviewer import DocumentReviewer, ReviewResult
+    from app.services.review.doc_reviewer import DocumentReviewer
 
 GraphObject = Module | File | Symbol
 _API_SYMBOL_TYPES = {"route", "controller", "endpoint", "api"}
@@ -100,7 +100,6 @@ class OpenAICompatibleDocLLMClient:
         if self.client is None:
             return self.fallback_client.generate(section, retrieval, prompt)
 
-        last_error: Exception | None = None
         for attempt in range(max(1, settings.LLM_MAX_RETRIES)):
             try:
                 response = self.client.chat.completions.create(
@@ -112,8 +111,7 @@ class OpenAICompatibleDocLLMClient:
                 if content.strip():
                     return content
                 raise RuntimeError("empty section content")
-            except Exception as exc:  # pragma: no cover - depends on external client behavior
-                last_error = exc
+            except Exception:  # pragma: no cover - depends on external client behavior
                 if attempt + 1 >= max(1, settings.LLM_MAX_RETRIES):
                     break
                 time.sleep(min(2 ** attempt, 5))

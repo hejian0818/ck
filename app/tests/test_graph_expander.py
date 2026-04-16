@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.models.anchor import Anchor
 from app.models.graph_objects import File, Module, Relation, Symbol
-from app.models.qa_models import RetrievalResult
 from app.services.retrieval.graph_expander import GraphExpander
 
 

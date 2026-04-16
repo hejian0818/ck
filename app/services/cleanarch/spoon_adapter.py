@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from app.models.graph_objects import Relation, Span, Symbol
-from app.services.cleanarch.parser_adapter import ParseResult, ParserAdapter
+from app.services.cleanarch.parser_adapter import ParserAdapter, ParseResult
 
 
 class SpoonAdapter(ParserAdapter):

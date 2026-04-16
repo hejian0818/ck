@@ -180,7 +180,7 @@ def main() -> None:
     document_path.write_text("\n".join(lines), encoding="utf-8")
 
     qa_lines = [
-        f"Question: GreetingService.greet 做什么？",
+        "Question: GreetingService.greet 做什么？",
         f"Answer: {qa_response.answer}",
         f"Anchor: {qa_response.anchor.model_dump()}",
         f"Used objects: {', '.join(qa_response.used_objects)}",

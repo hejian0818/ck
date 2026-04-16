@@ -5,10 +5,8 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from app.models.anchor import Anchor
-from app.models.doc_models import DocumentSkeleton, SectionPlan
 from app.models.graph_objects import File, Module, Relation, Span, Symbol
-from app.services.agents.doc_agent import DocAgent, DeterministicDocLLMClient, SkeletonPlanner
+from app.services.agents.doc_agent import DeterministicDocLLMClient, DocAgent, SkeletonPlanner
 from app.services.agents.qa_agent import QAAgent
 from app.services.memory.memory_manager import MemoryManager
 from app.services.retrieval.doc_retriever import DocRetriever
@@ -82,7 +80,6 @@ class _IntegrationRepoStub:
         return f"/test/{repo_id}"
 
     def find_span(self, file_path, line_start, line_end):
-        from app.models.graph_objects import Span
         if file_path == "core/main.py":
             return [Span(
                 file_path=file_path, line_start=5, line_end=20,

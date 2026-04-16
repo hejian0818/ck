@@ -240,10 +240,18 @@ Memory 系统: Anchor Memory / Retrieval Memory / Focus Memory / Task Memory
 uv run python -m pytest app/tests/ -v
 ```
 
+### 质量检查
+
+```bash
+uv run ruff check app scripts
+uv run mypy
+uv run python -m compileall app scripts
+```
+
 当前主分支验证状态：
 
 ```text
-168 passed, 1 skipped
+170 passed, 1 skipped
 ```
 
 ### 项目结构

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
 import math
+from functools import lru_cache
 from time import perf_counter
 from typing import Any
 

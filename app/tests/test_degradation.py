@@ -6,14 +6,13 @@ import unittest
 from unittest.mock import patch
 
 from app.models.anchor import Anchor
-from app.models.doc_models import DocumentSkeleton, SectionContent, SectionPlan
-from app.models.graph_objects import File, Module, Relation, Symbol
+from app.models.doc_models import DocumentSkeleton, SectionPlan
+from app.models.graph_objects import File, Module, Symbol
 from app.models.qa_models import RetrievalResult
-from app.services.agents.doc_agent import DocAgent, DocLLMClient, SkeletonPlanner
+from app.services.agents.doc_agent import DocAgent, SkeletonPlanner
 from app.services.agents.metrics import Metrics
 from app.services.agents.qa_agent import QAAgent
 from app.services.retrieval.doc_retriever import DocRetriever, SectionRetrievalResult
-
 
 
 class _QARepoStub:

@@ -24,6 +24,12 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
+      - name: Lint
+        run: uv run ruff check app scripts
+
+      - name: Type check
+        run: uv run mypy
+
       - name: Compile Python files
         run: uv run python -m compileall app scripts
 
