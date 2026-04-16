@@ -6,7 +6,8 @@
 
 - **多语言代码解析** — Python / Java / C / C++ / JavaScript / Go / Rust（Python AST + 轻量解析器 fallback）
 - **知识图谱构建** — 模块 / 文件 / 符号 / 关系四层索引，稳定 ID 体系
-- **向量语义检索** — pgvector 嵌入索引，sentence-transformers 或 OpenAI 编码
+- **增量索引** — 基于文件哈希复用未变化文件，支持 Git changed-only 扫描、删除文件清理
+- **向量语义检索** — pgvector 嵌入索引，sentence-transformers 或 OpenAI 编码；SQLite demo/test 环境支持 Python 侧向量搜索
 - **交互式代码问答** — 锚点定位 → 上下文检索 → 多策略路由 → LLM 生成
 - **自动设计文档生成** — 骨架规划 → 段落生成 → PlantUML 图表 → 一致性审查
 - **高级降级模式** — 部分回答、多候选、引导式追问；低置信度标注、段落级降级
@@ -20,7 +21,7 @@
 | Web 框架 | FastAPI + Uvicorn |
 | 数据校验 | Pydantic v2 |
 | 元数据存储 | PostgreSQL |
-| 向量存储 | pgvector |
+| 向量存储 | pgvector；SQLite 测试模式支持 JSON 向量 |
 | 代码解析 | Python AST + 轻量多语言解析器 fallback |
 | LLM 接口 | OpenAI-compatible (Ollama / vLLM / 国产模型) |
 | 包管理 | uv |
@@ -76,6 +77,52 @@ python3 scripts/demo.py
 | POST | `/metrics/reset` | 重置指标 |
 | GET | `/health` | 健康检查 |
 
+### 索引构建
+
+全量构建：
+
+```bash
+uv run python scripts/build_index.py --repo-path /path/to/repo --branch main
+```
+
+默认开启哈希增量复用：如果仓库已经索引过，未变化文件会从旧图复用，只重新解析内容变化的文件。
+
+只扫描当前工作树相对 `HEAD` 的 Git 变更：
+
+```bash
+uv run python scripts/build_index.py --repo-path /path/to/repo --changed-only
+```
+
+指定比较基准：
+
+```bash
+uv run python scripts/build_index.py --repo-path /path/to/repo --changed-only --base-ref origin/main
+```
+
+对应 API 请求：
+
+```json
+POST /repo/scan
+{
+  "repo_path": "/path/to/repo",
+  "branch": "main",
+  "incremental": true,
+  "changed_only": true,
+  "base_ref": "HEAD"
+}
+```
+
+`changed_only` 会保留旧索引中的未变化文件，只重建 Git 变更文件；已删除源码文件会从图索引和向量索引中清理。
+
+响应字段：
+
+| 字段 | 说明 |
+|------|------|
+| `parsed_files` | 本次实际解析的文件数 |
+| `reused_files` | 从旧图复用的文件数 |
+| `deleted_files` | 本次从索引中移除的文件数 |
+| `scanned_files` | 本次 Git 变更扫描命中的现存源码文件数 |
+
 ## 架构说明
 
 ```
@@ -124,6 +171,12 @@ Memory 系统: Anchor Memory / Retrieval Memory / Focus Memory / Task Memory
 
 ```bash
 uv run python -m pytest app/tests/ -v
+```
+
+当前主分支验证状态：
+
+```text
+168 passed, 1 skipped
 ```
 
 ### 项目结构
