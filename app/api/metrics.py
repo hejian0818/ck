@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 
 from app.api.dependencies import require_api_key
 from app.core.metrics import metrics
@@ -14,6 +14,13 @@ router = APIRouter(prefix="/metrics", tags=["metrics"])
 def get_metrics() -> dict:
     """Return all collected metrics."""
     return metrics.snapshot()
+
+
+@router.get("/prometheus")
+def get_prometheus_metrics() -> Response:
+    """Return metrics in Prometheus text format."""
+
+    return Response(content=metrics.prometheus_text(), media_type="text/plain; version=0.0.4")
 
 
 @router.post("/reset", dependencies=[Depends(require_api_key)])

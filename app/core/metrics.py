@@ -63,6 +63,25 @@ class MetricsCollector:
             },
         }
 
+    def prometheus_text(self) -> str:
+        """Return metrics in a Prometheus-compatible text exposition format."""
+
+        lines: list[str] = []
+        for name in sorted(self._counters):
+            metric_name = _prometheus_name(name)
+            lines.append(f"# TYPE {metric_name} counter")
+            lines.append(f"{metric_name} {self._counters[name]}")
+
+        for name in sorted(self._histograms):
+            stats = self.get_histogram_stats(name)
+            metric_name = _prometheus_name(name)
+            lines.append(f"# TYPE {metric_name} summary")
+            lines.append(f'{metric_name}_count {stats["count"]}')
+            lines.append(f'{metric_name}_sum {sum(self._histograms[name])}')
+            lines.append(f'{metric_name}{{quantile="0.5"}} {stats["p50"]}')
+            lines.append(f'{metric_name}{{quantile="0.99"}} {stats["p99"]}')
+        return "\n".join(lines) + ("\n" if lines else "")
+
     def reset(self) -> None:
         """Clear all metrics."""
 
@@ -75,6 +94,10 @@ def _percentile(values: list[float], quantile: float) -> float:
         return 0.0
     index = max(0, min(len(values) - 1, int(round((len(values) - 1) * quantile))))
     return values[index]
+
+
+def _prometheus_name(name: str) -> str:
+    return "".join(character if character.isalnum() or character == "_" else "_" for character in name)
 
 
 metrics = MetricsCollector()

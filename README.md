@@ -121,6 +121,7 @@ alembic upgrade head
 | POST | `/doc/generate` | 生成完整设计文档 |
 | GET | `/doc/{repo_id}/sections` | 获取文档段落列表 |
 | GET | `/metrics` | 获取运行时指标 |
+| GET | `/metrics/prometheus` | 获取 Prometheus 文本格式指标 |
 | POST | `/metrics/reset` | 重置指标 |
 | GET | `/health` | 健康检查 |
 | GET | `/ready` | 就绪检查，验证数据库连接和基础 schema |

@@ -46,6 +46,19 @@ class MetricsCollectorTests(unittest.TestCase):
         self.assertEqual(snap["counters"]["a"], 1)
         self.assertIn("b", snap["histograms"])
 
+    def test_prometheus_text_exports_counters_and_histograms(self) -> None:
+        self.collector.increment("qa.requests", 2)
+        self.collector.observe("qa.latency_ms", 12.0)
+        self.collector.observe("qa.latency_ms", 20.0)
+
+        output = self.collector.prometheus_text()
+
+        self.assertIn("# TYPE qa_requests counter", output)
+        self.assertIn("qa_requests 2", output)
+        self.assertIn("# TYPE qa_latency_ms summary", output)
+        self.assertIn("qa_latency_ms_count 2", output)
+        self.assertIn('qa_latency_ms{quantile="0.5"}', output)
+
     def test_reset_clears_everything(self) -> None:
         self.collector.increment("x", 5)
         self.collector.observe("y", 99.0)
@@ -81,6 +94,15 @@ class MetricsApiTests(unittest.TestCase):
         self.assertEqual(after_reset.status_code, 200)
         self.assertEqual(after_reset.json()["counters"], {})
         self.assertEqual(after_reset.json()["histograms"], {})
+
+    def test_prometheus_metrics_endpoint(self) -> None:
+        metrics.increment("qa.requests", 2)
+
+        response = self.client.get("/metrics/prometheus")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/plain", response.headers["content-type"])
+        self.assertIn("qa_requests 2", response.text)
 
 
 if __name__ == "__main__":
