@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.models.qa_models import (
     RepoBuildRequest,
     RepoBuildResponse,
+    RepoBuildTaskListResponse,
     RepoBuildTaskStatusResponse,
     RepoBuildTaskSubmitResponse,
     SummaryResponse,
@@ -99,6 +100,17 @@ def get_index_task(task_id: str) -> RepoBuildTaskStatusResponse:
     if task is None:
         raise HTTPException(status_code=404, detail=error_detail("task_not_found", "Index task not found"))
     return task
+
+
+@router.get("/tasks", response_model=RepoBuildTaskListResponse)
+def list_index_tasks(status: str | None = None, limit: int = 50) -> RepoBuildTaskListResponse:
+    """Return recent background repository index tasks."""
+
+    if status is not None and status not in {"queued", "running", "success", "failed"}:
+        raise HTTPException(status_code=400, detail=error_detail("bad_request", "Invalid task status filter"))
+    if limit < 0:
+        raise HTTPException(status_code=400, detail=error_detail("bad_request", "Task list limit must be non-negative"))
+    return RepoBuildTaskListResponse(tasks=index_task_manager.list_tasks(status=status, limit=limit))
 
 
 def _run_index_task(task_id: str, request: RepoBuildRequest) -> None:

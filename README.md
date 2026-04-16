@@ -114,6 +114,7 @@ alembic upgrade head
 |------|------|------|
 | POST | `/repo/scan` | 扫描代码仓库，构建图索引 |
 | POST | `/repo/scan-async` | 后台扫描代码仓库，返回任务 ID |
+| GET | `/repo/tasks` | 查询后台索引任务列表 |
 | GET | `/repo/tasks/{task_id}` | 查询后台索引任务状态 |
 | POST | `/qa/ask` | 交互式代码问答 |
 | POST | `/doc/plan` | 生成文档骨架 |

@@ -57,6 +57,19 @@ class IndexTaskManager:
             task = self._tasks.get(task_id)
             return task.model_copy(deep=True) if task is not None else None
 
+    def list_tasks(self, status: str | None = None, limit: int = 50) -> list[RepoBuildTaskStatusResponse]:
+        """Return recent tasks, newest first."""
+
+        with self._lock:
+            self._prune_locked(self._clock())
+            tasks = list(self._tasks.values())
+            if status is not None:
+                tasks = [task for task in tasks if task.status == status]
+            tasks.sort(key=lambda task: task.updated_at, reverse=True)
+            if limit > 0:
+                tasks = tasks[:limit]
+            return [task.model_copy(deep=True) for task in tasks]
+
     def _update(self, task_id: str, **changes: object) -> None:
         with self._lock:
             now = self._clock()

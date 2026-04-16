@@ -101,6 +101,14 @@ class RepoBuildTaskStatusResponse(BaseModel):
     error: str | None = None
 
 
+class RepoBuildTaskListResponse(BaseModel):
+    """List response for background repository index tasks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tasks: list[RepoBuildTaskStatusResponse] = Field(default_factory=list)
+
+
 class SummaryResponse(BaseModel):
     """Response model for summary lookup."""
 

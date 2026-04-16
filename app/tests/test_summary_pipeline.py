@@ -1028,6 +1028,21 @@ class SummaryPipelineTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["detail"]["code"], "task_not_found")
 
+    def test_scan_async_lists_tasks(self) -> None:
+        repository = self._build_repository()
+        repo_path = str(Path("data/test_repo").resolve())
+
+        with patch("app.api.repo.get_graph_repository", return_value=repository):
+            client = TestClient(app)
+            queued_response = client.post("/repo/scan-async", json={"repo_path": repo_path, "branch": "main"})
+            self.assertEqual(queued_response.status_code, 200)
+            response = client.get("/repo/tasks", params={"status": "success", "limit": 1})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload["tasks"]), 1)
+        self.assertEqual(payload["tasks"][0]["status"], "success")
+
     def test_scan_api_rejects_missing_repository_path(self) -> None:
         client = TestClient(app)
         response = client.post("/repo/scan", json={"branch": "main"})

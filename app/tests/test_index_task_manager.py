@@ -61,6 +61,24 @@ class IndexTaskManagerTests(unittest.TestCase):
         self.assertIsNotNone(manager.get_task(second))
         self.assertIsNotNone(manager.get_task(third))
 
+    def test_list_tasks_filters_status_and_orders_newest_first(self) -> None:
+        clock = _Clock()
+        manager = IndexTaskManager(retention_seconds=0, max_entries=100, clock=clock)
+        first = manager.create_task()
+        manager.mark_success(first, self._result())
+        clock.advance(seconds=1)
+        second = manager.create_task()
+        manager.mark_failed(second, "failed")
+        clock.advance(seconds=1)
+        third = manager.create_task()
+        manager.mark_success(third, self._result())
+
+        success_ids = [task.task_id for task in manager.list_tasks(status="success")]
+        all_ids = [task.task_id for task in manager.list_tasks(limit=2)]
+
+        self.assertEqual(success_ids, [third, first])
+        self.assertEqual(all_ids, [third, second])
+
 
 if __name__ == "__main__":
     unittest.main()
