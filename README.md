@@ -64,6 +64,40 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 python3 scripts/demo.py
 ```
 
+### Docker Compose 部署
+
+一条命令启动 API + PostgreSQL + pgvector：
+
+```bash
+docker compose up --build
+```
+
+健康检查：
+
+```bash
+curl http://localhost:8000/health
+```
+
+Compose 会把当前仓库只读挂载到容器内：
+
+```text
+/workspace/repos/codewiki
+```
+
+可以直接扫描当前项目：
+
+```bash
+curl -X POST http://localhost:8000/repo/scan \
+  -H "Content-Type: application/json" \
+  -d '{
+    "repo_path": "/workspace/repos/codewiki",
+    "branch": "main",
+    "incremental": true
+  }'
+```
+
+默认 Compose 配置设置 `ENABLE_VECTOR_INDEXING=false`，避免首次扫描时下载 embedding 模型。需要 pgvector 嵌入索引时，把 `docker-compose.yml` 里的值改为 `true`，并确保容器能访问对应 embedding 模型或 OpenAI-compatible embedding 服务。
+
 ### API 接口
 
 | 方法 | 路径 | 说明 |
@@ -181,6 +215,7 @@ Memory 系统: Anchor Memory / Retrieval Memory / Focus Memory / Task Memory
 |--------|--------|------|
 | `DATABASE_URL` | `postgresql://localhost/ck` | 数据库连接 |
 | `VECTOR_DIMENSION` | `768` | 向量维度 |
+| `ENABLE_VECTOR_INDEXING` | `True` | PostgreSQL 模式下是否构建 pgvector 嵌入索引 |
 | `EMBEDDING_PROVIDER` | `sentence-transformer` | 嵌入提供方 |
 | `EMBEDDING_MODEL` | `BAAI/bge-base-en-v1.5` | 嵌入模型 |
 | `EMBEDDING_BATCH_SIZE` | `32` | 嵌入批量大小 |

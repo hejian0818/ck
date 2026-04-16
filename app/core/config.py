@@ -19,6 +19,7 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = Field(default="postgresql://localhost/ck")
     VECTOR_DIMENSION: int = Field(default=768)
+    ENABLE_VECTOR_INDEXING: bool = Field(default=True)
     EMBEDDING_PROVIDER: str = Field(default="sentence-transformer")
     EMBEDDING_MODEL: str = Field(default="BAAI/bge-base-en-v1.5")
     EMBEDDING_BATCH_SIZE: int = Field(default=32)

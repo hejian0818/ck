@@ -37,7 +37,7 @@ def _build_and_persist(request: RepoBuildRequest) -> RepoBuildResponse:
     repository = get_graph_repository()
     repository.initialize_schema()
     graph_builder = GraphBuilder()
-    if repository.engine.dialect.name == "postgresql":
+    if repository.engine.dialect.name == "postgresql" and settings.ENABLE_VECTOR_INDEXING:
         repository.init_vector_tables()
         graph_builder = GraphBuilder(
             embedding_builder=EmbeddingBuilder(),

@@ -1,0 +1,44 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ck
+      POSTGRES_USER: ck
+      POSTGRES_PASSWORD: ck
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ck -d ck"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://ck:ck@db:5432/ck
+      ENABLE_VECTOR_INDEXING: "false"
+      LOG_LEVEL: INFO
+      LOG_FORMAT: json
+      LLM_API_BASE: http://host.docker.internal:11434/v1
+      LLM_API_KEY: dummy
+      LLM_MODEL: qwen2.5-coder:7b
+      REPO_SCAN_ALLOWED_ROOTS: /workspace/repos:/app/data
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - .:/workspace/repos/codewiki:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  postgres_data:
