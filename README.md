@@ -9,7 +9,8 @@
 - **增量索引** — 基于文件哈希复用未变化文件，支持 Git changed-only 扫描、删除文件清理
 - **向量语义检索** — pgvector 嵌入索引，sentence-transformers 或 OpenAI 编码；SQLite demo/test 环境支持 Python 侧向量搜索
 - **交互式代码问答** — 锚点定位 → 上下文检索 → 多策略路由 → LLM 生成
-- **自动设计文档生成** — 骨架规划 → 段落生成 → PlantUML 图表 → 一致性审查
+- **LangGraph Agent 工作流** — QA / Doc 流程通过 LangGraph 编排，可选 PostgreSQL checkpoint
+- **自动设计文档生成** — LangGraph 编排骨架规划 → 段落生成 → PlantUML 图表 → 一致性审查
 - **高级降级模式** — 部分回答、多候选、引导式追问；低置信度标注、段落级降级
 - **可观测性** — 结构化 JSON 日志、指标采集（/metrics API）、请求链路追踪
 
@@ -23,6 +24,7 @@
 | 元数据存储 | PostgreSQL |
 | 向量存储 | pgvector；SQLite 测试模式支持 JSON 向量 |
 | 代码解析 | Python AST + 轻量多语言解析器 fallback |
+| Agent 编排 | LangGraph |
 | LLM 接口 | OpenAI-compatible (Ollama / vLLM / 国产模型) |
 | 包管理 | uv |
 
@@ -220,6 +222,7 @@ curl http://localhost:8000/repo/tasks/8ddfb0c842c449f5aa3de8f1e6c3e0ac
 └─────────────────────┘
     ↓
 Memory 系统: Anchor Memory / Retrieval Memory / Focus Memory / Task Memory
+LangGraph: QA / Doc workflow 编排，可选 PostgreSQL checkpoint 持久化
 ```
 
 ## 配置参考
@@ -236,6 +239,9 @@ Memory 系统: Anchor Memory / Retrieval Memory / Focus Memory / Task Memory
 | `LLM_MODEL` | `qwen2.5-coder:7b` | LLM 模型 |
 | `LLM_MAX_RETRIES` | `3` | LLM 最大重试次数 |
 | `LLM_TIMEOUT` | `30` | LLM 调用超时（秒） |
+| `LANGGRAPH_ENABLED` | `True` | 是否启用 LangGraph QA / Doc workflow 编排 |
+| `LANGGRAPH_CHECKPOINT_ENABLED` | `False` | 是否启用 LangGraph PostgreSQL checkpoint |
+| `LANGGRAPH_CHECKPOINT_URL` | `None` | LangGraph checkpoint 数据库连接，不填时复用 `DATABASE_URL` |
 | `DOC_MAX_SECTIONS` | `50` | 文档最大段落数 |
 | `DOC_DIAGRAM_ENABLED` | `True` | 是否生成图表 |
 | `DOC_RETRIEVAL_TOP_K` | `10` | 文档检索 top-k |

@@ -8,6 +8,7 @@ from app.api.dependencies import get_graph_repository, memory_manager, require_a
 from app.api.errors import handle_api_error
 from app.models.qa_models import QAAskRequest, QAResponse, SessionStateResponse
 from app.services.agents.qa_agent import QAAgent
+from app.services.workflows.qa_graph import QAWorkflow
 
 router = APIRouter(prefix="/qa", tags=["qa"])
 
@@ -18,7 +19,8 @@ def ask_question(request: QAAskRequest) -> QAResponse:
 
     try:
         agent = QAAgent(repository=get_graph_repository(), memory_manager=memory_manager)
-        return agent.answer(
+        workflow = QAWorkflow(agent)
+        return workflow.answer(
             repo_id=request.repo_id,
             question=request.question,
             selection=request.selection,

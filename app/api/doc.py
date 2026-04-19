@@ -9,6 +9,7 @@ from app.api.errors import handle_api_error
 from app.models.doc_models import DocGenerateRequest, DocPlanRequest, DocumentResult, DocumentSkeleton, SectionPlan
 from app.services.agents.doc_agent import DocAgent
 from app.services.review.doc_reviewer import DocumentReviewer
+from app.services.workflows.doc_graph import DocWorkflow
 
 router = APIRouter(prefix="/doc", tags=["doc"])
 
@@ -24,7 +25,7 @@ def plan_document(request: DocPlanRequest) -> DocumentSkeleton:
             memory_manager=memory_manager,
             reviewer=DocumentReviewer(repository),
         )
-        return agent.plan(request.repo_id)
+        return DocWorkflow(agent).plan(request.repo_id)
     except Exception as exc:  # pragma: no cover
         handle_api_error(exc)
 
@@ -40,7 +41,7 @@ def generate_document(request: DocGenerateRequest) -> DocumentResult:
             memory_manager=memory_manager,
             reviewer=DocumentReviewer(repository),
         )
-        return agent.generate(repo_id=request.repo_id, skeleton=request.skeleton)
+        return DocWorkflow(agent).generate(repo_id=request.repo_id, skeleton=request.skeleton)
     except Exception as exc:  # pragma: no cover
         handle_api_error(exc)
 
