@@ -22,6 +22,7 @@
 | Web 框架 | FastAPI + Uvicorn |
 | 数据校验 | Pydantic v2 |
 | 元数据存储 | PostgreSQL |
+| 分布式缓存/锁/限流 | Redis |
 | 向量存储 | pgvector；SQLite 测试模式支持 JSON 向量 |
 | 代码解析 | Python AST + 轻量多语言解析器 fallback |
 | Agent 编排 | LangGraph |
@@ -71,11 +72,13 @@ python3 scripts/demo.py
 
 ### Docker Compose 部署
 
-一条命令启动 API + PostgreSQL + pgvector：
+一条命令启动 API + PostgreSQL + pgvector + Redis：
 
 ```bash
 docker compose up --build
 ```
+
+Redis 用于分布式锁、接口限流和短期高频状态；PostgreSQL 仍负责代码图谱、迁移和 LangGraph checkpoint。
 
 健康检查：
 
@@ -223,7 +226,19 @@ curl http://localhost:8000/repo/tasks/8ddfb0c842c449f5aa3de8f1e6c3e0ac
     ↓
 Memory 系统: Anchor Memory / Retrieval Memory / Focus Memory / Task Memory
 LangGraph: QA / Doc workflow 编排，可选 PostgreSQL checkpoint 持久化
+Redis: 分布式索引锁 / 固定窗口限流 / 短期高频状态
 ```
+
+缓存和状态分层：
+
+| 类型 | 存储 | 生命周期 | 用途 |
+|------|------|----------|------|
+| 代码图谱、向量、文档结果 | PostgreSQL + pgvector | 长期持久化 | 服务重启或长时间后再次打开仍可检索 |
+| LangGraph checkpoint | PostgreSQL | 长期持久化 | 恢复 QA / Doc workflow 的线程状态 |
+| 请求限流、索引互斥锁 | Redis | TTL 短期状态 | 多实例部署下防止重复索引和接口突刺 |
+| 进程内 LRU 缓存 | Python 内存 | 当前进程 | 嵌入和图查询热点加速，重启后自动重建 |
+
+长时间后第二次打开同一个对话时，业务数据从 PostgreSQL / pgvector 重新加载；启用 `LANGGRAPH_CHECKPOINT_ENABLED=true` 后，同一 thread/session 的 LangGraph 执行状态也从 PostgreSQL checkpoint 恢复。Redis 不承载长期对话历史，只承担分布式协调和短期高频状态，避免缓存过期导致业务数据丢失。
 
 ## 配置参考
 
@@ -242,6 +257,13 @@ LangGraph: QA / Doc workflow 编排，可选 PostgreSQL checkpoint 持久化
 | `LANGGRAPH_ENABLED` | `True` | 是否启用 LangGraph QA / Doc workflow 编排 |
 | `LANGGRAPH_CHECKPOINT_ENABLED` | `False` | 是否启用 LangGraph PostgreSQL checkpoint |
 | `LANGGRAPH_CHECKPOINT_URL` | `None` | LangGraph checkpoint 数据库连接，不填时复用 `DATABASE_URL` |
+| `REDIS_ENABLED` | `False` | 是否启用 Redis 分布式能力 |
+| `REDIS_URL` | `redis://localhost:6379/0` | Redis 连接 |
+| `REDIS_KEY_PREFIX` | `ck` | Redis key 前缀 |
+| `REPO_INDEX_LOCK_TTL_SECONDS` | `1800` | 仓库索引分布式锁 TTL |
+| `RATE_LIMIT_ENABLED` | `False` | 是否启用 Redis 固定窗口限流 |
+| `RATE_LIMIT_REQUESTS` | `120` | 限流窗口最大请求数 |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | 限流窗口秒数 |
 | `DOC_MAX_SECTIONS` | `50` | 文档最大段落数 |
 | `DOC_DIAGRAM_ENABLED` | `True` | 是否生成图表 |
 | `DOC_RETRIEVAL_TOP_K` | `10` | 文档检索 top-k |
@@ -277,7 +299,7 @@ uv run alembic upgrade head
 当前主分支验证状态：
 
 ```text
-170 passed, 1 skipped
+196 passed, 1 skipped
 ```
 
 ### 项目结构

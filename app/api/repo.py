@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
-from app.api.dependencies import get_graph_repository, require_api_key
+from app.api.dependencies import get_graph_repository, require_api_key, require_rate_limit
 from app.api.errors import error_detail, handle_api_error, validate_repo_path
 from app.core.config import settings
 from app.models.qa_models import (
@@ -18,12 +18,13 @@ from app.models.qa_models import (
 from app.services.cleanarch.graph_builder import GraphBuilder
 from app.services.indexing.embedding_builder import EmbeddingBuilder
 from app.services.indexing.task_manager import index_task_manager
+from app.services.locks.distributed_lock import redis_lock
 from app.storage.vector_store import VectorStore
 
 router = APIRouter(prefix="/repo", tags=["repo"])
 
 
-@router.post("/build-index", response_model=RepoBuildResponse, dependencies=[Depends(require_api_key)])
+@router.post("/build-index", response_model=RepoBuildResponse, dependencies=[Depends(require_rate_limit), Depends(require_api_key)])
 def build_index(request: RepoBuildRequest) -> RepoBuildResponse:
     """Build and persist a repository index."""
 
@@ -35,6 +36,16 @@ def build_index(request: RepoBuildRequest) -> RepoBuildResponse:
 
 def _build_and_persist(request: RepoBuildRequest) -> RepoBuildResponse:
     repo_path = validate_repo_path(request.repo_path)
+    with redis_lock(f"repo-index:{repo_path}") as acquired:
+        if not acquired:
+            raise HTTPException(
+                status_code=409,
+                detail=error_detail("repo_index_in_progress", "Repository indexing is already running"),
+            )
+        return _build_and_persist_locked(request, repo_path)
+
+
+def _build_and_persist_locked(request: RepoBuildRequest, repo_path: str) -> RepoBuildResponse:
     repository = get_graph_repository()
     repository.initialize_schema()
     graph_builder = GraphBuilder()
@@ -71,14 +82,14 @@ def _build_and_persist(request: RepoBuildRequest) -> RepoBuildResponse:
     )
 
 
-@router.post("/scan", response_model=RepoBuildResponse, dependencies=[Depends(require_api_key)])
+@router.post("/scan", response_model=RepoBuildResponse, dependencies=[Depends(require_rate_limit), Depends(require_api_key)])
 def scan_repo(request: RepoBuildRequest) -> RepoBuildResponse:
     """Alias for building and persisting a repository index."""
 
     return build_index(request)
 
 
-@router.post("/scan-async", response_model=RepoBuildTaskSubmitResponse, dependencies=[Depends(require_api_key)])
+@router.post("/scan-async", response_model=RepoBuildTaskSubmitResponse, dependencies=[Depends(require_rate_limit), Depends(require_api_key)])
 def scan_repo_async(request: RepoBuildRequest, background_tasks: BackgroundTasks) -> RepoBuildTaskSubmitResponse:
     """Queue a repository index build in the background."""
 

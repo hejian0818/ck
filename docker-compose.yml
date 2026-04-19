@@ -15,10 +15,24 @@ services:
       timeout: 5s
       retries: 20
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   api:
     build: .
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://ck:ck@db:5432/ck
@@ -31,6 +45,13 @@ services:
       LANGGRAPH_ENABLED: "true"
       LANGGRAPH_CHECKPOINT_ENABLED: "false"
       LANGGRAPH_CHECKPOINT_URL: postgresql://ck:ck@db:5432/ck
+      REDIS_ENABLED: "true"
+      REDIS_URL: redis://redis:6379/0
+      REDIS_KEY_PREFIX: ck
+      REPO_INDEX_LOCK_TTL_SECONDS: "1800"
+      RATE_LIMIT_ENABLED: "true"
+      RATE_LIMIT_REQUESTS: "120"
+      RATE_LIMIT_WINDOW_SECONDS: "60"
       API_KEY: ""
       REPO_SCAN_ALLOWED_ROOTS: /workspace/repos:/app/data
       REPO_SCAN_MAX_FILES: "5000"
@@ -50,3 +71,4 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:

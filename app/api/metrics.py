@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Response
 
-from app.api.dependencies import require_api_key
+from app.api.dependencies import require_api_key, require_rate_limit
 from app.core.metrics import metrics
 
 router = APIRouter(prefix="/metrics", tags=["metrics"])
@@ -23,7 +23,7 @@ def get_prometheus_metrics() -> Response:
     return Response(content=metrics.prometheus_text(), media_type="text/plain; version=0.0.4")
 
 
-@router.post("/reset", dependencies=[Depends(require_api_key)])
+@router.post("/reset", dependencies=[Depends(require_rate_limit), Depends(require_api_key)])
 def reset_metrics() -> dict[str, str]:
     """Reset all metrics."""
     metrics.reset()

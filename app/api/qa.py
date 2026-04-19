@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from app.api.dependencies import get_graph_repository, memory_manager, require_api_key
+from app.api.dependencies import get_graph_repository, memory_manager, require_api_key, require_rate_limit
 from app.api.errors import handle_api_error
 from app.models.qa_models import QAAskRequest, QAResponse, SessionStateResponse
 from app.services.agents.qa_agent import QAAgent
@@ -13,7 +13,7 @@ from app.services.workflows.qa_graph import QAWorkflow
 router = APIRouter(prefix="/qa", tags=["qa"])
 
 
-@router.post("/ask", response_model=QAResponse, dependencies=[Depends(require_api_key)])
+@router.post("/ask", response_model=QAResponse, dependencies=[Depends(require_rate_limit), Depends(require_api_key)])
 def ask_question(request: QAAskRequest) -> QAResponse:
     """Answer a code question."""
 
@@ -38,7 +38,11 @@ def get_session_state(session_id: str) -> SessionStateResponse:
     return SessionStateResponse(session_id=session_id, current_anchor=memory.current_anchor)
 
 
-@router.post("/session/{session_id}/reset", response_model=SessionStateResponse, dependencies=[Depends(require_api_key)])
+@router.post(
+    "/session/{session_id}/reset",
+    response_model=SessionStateResponse,
+    dependencies=[Depends(require_rate_limit), Depends(require_api_key)],
+)
 def reset_session(session_id: str) -> SessionStateResponse:
     """Clear session memory."""
 
