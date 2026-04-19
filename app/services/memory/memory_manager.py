@@ -1,4 +1,4 @@
-"""In-memory session memory storage."""
+"""Session and task memory storage."""
 
 from __future__ import annotations
 
@@ -8,9 +8,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.config import settings
 from app.core.thresholds import ANCHOR_CONFIDENCE_STRONG
 from app.models.anchor import Anchor
 from app.models.qa_models import RetrievalResult
+from app.storage.redis_client import RedisLike, get_redis_client, redis_decode, redis_key
 
 
 class RetrievalMemory(BaseModel):
@@ -58,13 +60,21 @@ class TaskMemory(BaseModel):
 
 
 class MemoryManager:
-    """Manage session memory in process memory."""
+    """Manage session memory with Redis persistence when configured."""
 
-    def __init__(self) -> None:
+    def __init__(self, redis_client: RedisLike | None = None) -> None:
         self._sessions: dict[str, AnchorMemory] = {}
         self._tasks: dict[str, TaskMemory] = {}
+        self._redis = redis_client if redis_client is not None else get_redis_client()
 
     def get_anchor_memory(self, session_id: str) -> AnchorMemory:
+        if self._redis is not None:
+            memory = self._load_anchor_memory(session_id)
+            if memory is not None:
+                return memory
+            memory = AnchorMemory()
+            self._save_anchor_memory(session_id, memory)
+            return memory
         return self._sessions.setdefault(session_id, AnchorMemory())
 
     def update_anchor_memory(self, session_id: str, anchor: Anchor) -> None:
@@ -78,8 +88,12 @@ class MemoryManager:
 
         if previous_target and next_target and previous_target != next_target:
             memory.retrieval_memory = RetrievalMemory()
+        self._save_anchor_memory(session_id, memory)
 
     def clear_memory(self, session_id: str) -> None:
+        if self._redis is not None:
+            self._redis.delete(self._anchor_key(session_id))
+            return
         self._sessions.pop(session_id, None)
 
     def create_task_memory(
@@ -101,6 +115,9 @@ class MemoryManager:
             last_updated_at=now,
             checkpoint_data=dict(checkpoint_data or {}),
         )
+        self._save_task_memory(task_type, repo_id, task_memory)
+        if self._redis is not None:
+            return task_memory
         self._tasks[self._task_key(task_type, repo_id)] = task_memory
         return task_memory
 
@@ -109,6 +126,8 @@ class MemoryManager:
         task_type: Literal["doc_generation", "qa"],
         repo_id: str,
     ) -> TaskMemory | None:
+        if self._redis is not None:
+            return self._load_task_memory(task_type, repo_id)
         return self._tasks.get(self._task_key(task_type, repo_id))
 
     def resume_task_memory(
@@ -146,6 +165,7 @@ class MemoryManager:
             task_memory.status = "in_progress"
 
         task_memory.last_updated_at = self._timestamp()
+        self._save_task_memory(task_type, repo_id, task_memory)
         return task_memory
 
     def increment_task_retry(
@@ -163,6 +183,7 @@ class MemoryManager:
         else:
             task_memory.progress.setdefault(section_id, "pending")
         task_memory.last_updated_at = self._timestamp()
+        self._save_task_memory(task_type, repo_id, task_memory)
         return task_memory
 
     def complete_task_memory(
@@ -181,6 +202,7 @@ class MemoryManager:
                 task_memory.generated_sections.append(section_id)
         task_memory.status = "completed"
         task_memory.last_updated_at = self._timestamp()
+        self._save_task_memory(task_type, repo_id, task_memory)
         return task_memory
 
     def clear_task_memory(
@@ -188,6 +210,9 @@ class MemoryManager:
         task_type: Literal["doc_generation", "qa"],
         repo_id: str,
     ) -> None:
+        if self._redis is not None:
+            self._redis.delete(self._task_memory_key(task_type, repo_id))
+            return
         self._tasks.pop(self._task_key(task_type, repo_id), None)
 
     def update_retrieval_memory(
@@ -213,6 +238,7 @@ class MemoryManager:
             recent_subgraph_summary=recent_subgraph_summary,
             recent_evidence_summary=recent_evidence_summary,
         )
+        self._save_anchor_memory(session_id, memory)
 
     def update_focus_memory(self, session_id: str, question: str) -> None:
         memory = self.get_anchor_memory(session_id)
@@ -223,9 +249,62 @@ class MemoryManager:
         current_focus = memory.focus_memory.current_focus
         if not current_focus or self._is_focus_continuation(current_focus, next_focus):
             memory.focus_memory.current_focus = current_focus or next_focus
+            self._save_anchor_memory(session_id, memory)
             return
 
         memory.focus_memory.current_focus = next_focus
+        self._save_anchor_memory(session_id, memory)
+
+    def _load_anchor_memory(self, session_id: str) -> AnchorMemory | None:
+        if self._redis is None:
+            return None
+        raw = redis_decode(self._redis.get(self._anchor_key(session_id)))
+        if raw is None:
+            return None
+        return AnchorMemory.model_validate_json(raw)
+
+    def _save_anchor_memory(self, session_id: str, memory: AnchorMemory) -> None:
+        if self._redis is None:
+            return
+        self._redis.set(
+            self._anchor_key(session_id),
+            memory.model_dump_json(),
+            ex=settings.SESSION_MEMORY_TTL_SECONDS,
+        )
+
+    def _load_task_memory(
+        self,
+        task_type: Literal["doc_generation", "qa"],
+        repo_id: str,
+    ) -> TaskMemory | None:
+        if self._redis is None:
+            return None
+        raw = redis_decode(self._redis.get(self._task_memory_key(task_type, repo_id)))
+        if raw is None:
+            return None
+        return TaskMemory.model_validate_json(raw)
+
+    def _save_task_memory(
+        self,
+        task_type: Literal["doc_generation", "qa"],
+        repo_id: str,
+        task_memory: TaskMemory,
+    ) -> None:
+        if self._redis is None:
+            return
+        self._redis.set(
+            self._task_memory_key(task_type, repo_id),
+            task_memory.model_dump_json(),
+            ex=settings.TASK_MEMORY_TTL_SECONDS,
+        )
+
+    @staticmethod
+    def _anchor_key(session_id: str) -> str:
+        return redis_key("memory", "session", session_id)
+
+    @staticmethod
+    def _task_memory_key(task_type: Literal["doc_generation", "qa"], repo_id: str) -> str:
+        return redis_key("memory", "task", task_type, repo_id)
 
     @staticmethod
     def _should_preserve_anchor(current_anchor: Anchor | None, next_anchor: Anchor) -> bool:

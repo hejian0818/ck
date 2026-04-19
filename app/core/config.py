@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     REDIS_URL: str = Field(default="redis://localhost:6379/0")
     REDIS_KEY_PREFIX: str = Field(default="ck")
     REPO_INDEX_LOCK_TTL_SECONDS: int = Field(default=1800)
+    SESSION_MEMORY_TTL_SECONDS: int = Field(default=604_800)
+    TASK_MEMORY_TTL_SECONDS: int = Field(default=604_800)
     RATE_LIMIT_ENABLED: bool = Field(default=False)
     RATE_LIMIT_REQUESTS: int = Field(default=120)
     RATE_LIMIT_WINDOW_SECONDS: int = Field(default=60)

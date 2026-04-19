@@ -78,7 +78,7 @@ python3 scripts/demo.py
 docker compose up --build
 ```
 
-Redis 用于分布式锁、接口限流和短期高频状态；PostgreSQL 仍负责代码图谱、迁移和 LangGraph checkpoint。
+Redis 用于会话 Memory、后台任务状态、分布式锁、接口限流和短期高频状态；PostgreSQL 仍负责代码图谱、迁移和 LangGraph checkpoint。
 
 健康检查：
 
@@ -226,7 +226,7 @@ curl http://localhost:8000/repo/tasks/8ddfb0c842c449f5aa3de8f1e6c3e0ac
     ↓
 Memory 系统: Anchor Memory / Retrieval Memory / Focus Memory / Task Memory
 LangGraph: QA / Doc workflow 编排，可选 PostgreSQL checkpoint 持久化
-Redis: 分布式索引锁 / 固定窗口限流 / 短期高频状态
+Redis: 会话 Memory / 后台任务状态 / 分布式索引锁 / 固定窗口限流
 ```
 
 缓存和状态分层：
@@ -235,10 +235,11 @@ Redis: 分布式索引锁 / 固定窗口限流 / 短期高频状态
 |------|------|----------|------|
 | 代码图谱、向量、文档结果 | PostgreSQL + pgvector | 长期持久化 | 服务重启或长时间后再次打开仍可检索 |
 | LangGraph checkpoint | PostgreSQL | 长期持久化 | 恢复 QA / Doc workflow 的线程状态 |
+| 会话 Memory、文档任务进度、后台索引任务 | Redis | 默认 7 天 TTL | 多实例部署下共享对话焦点、断点进度和任务查询状态 |
 | 请求限流、索引互斥锁 | Redis | TTL 短期状态 | 多实例部署下防止重复索引和接口突刺 |
 | 进程内 LRU 缓存 | Python 内存 | 当前进程 | 嵌入和图查询热点加速，重启后自动重建 |
 
-长时间后第二次打开同一个对话时，业务数据从 PostgreSQL / pgvector 重新加载；启用 `LANGGRAPH_CHECKPOINT_ENABLED=true` 后，同一 thread/session 的 LangGraph 执行状态也从 PostgreSQL checkpoint 恢复。Redis 不承载长期对话历史，只承担分布式协调和短期高频状态，避免缓存过期导致业务数据丢失。
+长时间后第二次打开同一个对话时，业务数据从 PostgreSQL / pgvector 重新加载；启用 `REDIS_ENABLED=true` 后，同一 `session_id` 的 Anchor / Focus / Retrieval Memory 会从 Redis 恢复；启用 `LANGGRAPH_CHECKPOINT_ENABLED=true` 后，同一 thread/session 的 LangGraph 执行状态也从 PostgreSQL checkpoint 恢复。Redis 里会话和任务状态默认保留 7 天，超期后仍可基于 PostgreSQL 中的代码图谱重新检索回答。
 
 ## 配置参考
 
@@ -261,6 +262,8 @@ Redis: 分布式索引锁 / 固定窗口限流 / 短期高频状态
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis 连接 |
 | `REDIS_KEY_PREFIX` | `ck` | Redis key 前缀 |
 | `REPO_INDEX_LOCK_TTL_SECONDS` | `1800` | 仓库索引分布式锁 TTL |
+| `SESSION_MEMORY_TTL_SECONDS` | `604800` | Redis 会话 Memory 保留时间 |
+| `TASK_MEMORY_TTL_SECONDS` | `604800` | Redis 文档任务 Memory 保留时间 |
 | `RATE_LIMIT_ENABLED` | `False` | 是否启用 Redis 固定窗口限流 |
 | `RATE_LIMIT_REQUESTS` | `120` | 限流窗口最大请求数 |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | 限流窗口秒数 |
@@ -299,7 +302,7 @@ uv run alembic upgrade head
 当前主分支验证状态：
 
 ```text
-196 passed, 1 skipped
+198 passed, 1 skipped
 ```
 
 ### 项目结构

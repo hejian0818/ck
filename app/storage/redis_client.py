@@ -29,6 +29,18 @@ class RedisLike(Protocol):
     def expire(self, name: str, time: int) -> bool:
         """Expire a key."""
 
+    def zadd(self, name: str, mapping: dict[str, float]) -> int:
+        """Add members to a sorted set."""
+
+    def zrange(self, name: str, start: int, end: int) -> list[bytes | str]:
+        """Read sorted-set members in ascending score order."""
+
+    def zrevrange(self, name: str, start: int, end: int) -> list[bytes | str]:
+        """Read sorted-set members in descending score order."""
+
+    def zrem(self, name: str, *values: str) -> int:
+        """Remove members from a sorted set."""
+
 
 @lru_cache(maxsize=1)
 def get_redis_client() -> RedisLike | None:
@@ -52,3 +64,13 @@ def redis_key(*parts: str) -> str:
 
     normalized = ":".join(part.strip(":") for part in parts if part)
     return f"{settings.REDIS_KEY_PREFIX}:{normalized}"
+
+
+def redis_decode(value: bytes | str | int | None) -> str | None:
+    """Decode Redis scalar values to text."""
+
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return str(value)
