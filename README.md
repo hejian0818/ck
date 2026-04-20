@@ -124,6 +124,7 @@ alembic upgrade head
 | POST | `/qa/ask` | 交互式代码问答 |
 | POST | `/doc/plan` | 生成文档骨架 |
 | POST | `/doc/generate` | 生成完整设计文档 |
+| GET | `/doc/{repo_id}/latest` | 获取最近一次生成并持久化的设计文档 |
 | GET | `/doc/{repo_id}/sections` | 获取文档段落列表 |
 | GET | `/metrics` | 获取运行时指标 |
 | GET | `/metrics/prometheus` | 获取 Prometheus 文本格式指标 |
@@ -233,7 +234,7 @@ Redis: 会话 Memory / 后台任务状态 / 分布式索引锁 / 固定窗口限
 
 | 类型 | 存储 | 生命周期 | 用途 |
 |------|------|----------|------|
-| 代码图谱、向量、文档结果 | PostgreSQL + pgvector | 长期持久化 | 服务重启或长时间后再次打开仍可检索 |
+| 代码图谱、向量、文档骨架、文档结果 | PostgreSQL + pgvector | 长期持久化 | 服务重启或长时间后再次打开仍可检索 |
 | LangGraph checkpoint | PostgreSQL | 长期持久化 | 恢复 Repo Index / QA / Doc workflow 的线程状态 |
 | 会话 Memory、文档任务进度、后台索引任务 | Redis | 默认 7 天 TTL | 多实例部署下共享对话焦点、断点进度和任务查询状态 |
 | 请求限流、索引互斥锁 | Redis | TTL 短期状态 | 多实例部署下防止重复索引和接口突刺 |

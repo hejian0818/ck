@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from app.core.config import settings
+from app.models.doc_models import DocumentResult, DocumentSkeleton
 from app.models.graph_objects import File, GraphCode, Module, Relation, RepoMeta, Span, Symbol
 
 
@@ -546,6 +549,80 @@ class GraphRepository:
             )
         self.clear_cache()
 
+    def save_document_skeleton(self, skeleton: DocumentSkeleton) -> None:
+        """Persist the latest document skeleton for a repository."""
+
+        with self.engine.begin() as connection:
+            connection.execute(
+                text(self._document_skeleton_upsert_sql()),
+                {
+                    "repo_id": skeleton.repo_id,
+                    "title": skeleton.title,
+                    "skeleton_json": skeleton.model_dump_json(),
+                    "updated_at": self._now_for_database(),
+                },
+            )
+
+    def get_document_skeleton(self, repo_id: str) -> DocumentSkeleton | None:
+        """Return the latest persisted document skeleton for a repository."""
+
+        row = self._fetch_one(
+            "SELECT skeleton_json FROM document_skeletons WHERE repo_id = :repo_id",
+            {"repo_id": repo_id},
+        )
+        if row is None:
+            return None
+        return DocumentSkeleton.model_validate_json(self._json_text(row.skeleton_json))
+
+    def save_document_result(self, document: DocumentResult) -> str:
+        """Persist a generated document result and return its id."""
+
+        document_id = uuid4().hex
+        metadata = dict(document.metadata)
+        metadata.setdefault("document_id", document_id)
+        metadata.setdefault("generated_at", datetime.now(UTC).isoformat())
+        stored_document = document.model_copy(update={"metadata": metadata})
+        with self.engine.begin() as connection:
+            connection.execute(
+                text(self._document_result_insert_sql()),
+                {
+                    "document_id": document_id,
+                    "repo_id": stored_document.repo_id,
+                    "title": stored_document.title,
+                    "document_json": stored_document.model_dump_json(),
+                    "generated_at": self._now_for_database(),
+                },
+            )
+        return document_id
+
+    def get_document_result(self, document_id: str) -> DocumentResult | None:
+        """Return a persisted document result by id."""
+
+        row = self._fetch_one(
+            "SELECT document_json FROM document_results WHERE document_id = :document_id",
+            {"document_id": document_id},
+        )
+        if row is None:
+            return None
+        return DocumentResult.model_validate_json(self._json_text(row.document_json))
+
+    def get_latest_document_result(self, repo_id: str) -> DocumentResult | None:
+        """Return the newest generated document for a repository."""
+
+        row = self._fetch_one(
+            """
+            SELECT document_json
+            FROM document_results
+            WHERE repo_id = :repo_id
+            ORDER BY generated_at DESC
+            LIMIT 1
+            """,
+            {"repo_id": repo_id},
+        )
+        if row is None:
+            return None
+        return DocumentResult.model_validate_json(self._json_text(row.document_json))
+
     def get_repo_path(self, repo_id: str) -> str | None:
         row = self._fetch_one("SELECT repo_path FROM repos WHERE repo_id = :repo_id", {"repo_id": repo_id})
         return row.repo_path if row else None
@@ -630,6 +707,21 @@ class GraphRepository:
                 symbol_id TEXT,
                 node_type TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS document_skeletons (
+                repo_id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                skeleton_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS document_results (
+                document_id TEXT PRIMARY KEY,
+                repo_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                document_json TEXT NOT NULL,
+                generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS document_results_repo_generated_idx
+            ON document_results(repo_id, generated_at DESC);
             """
         schema_path = Path(__file__).with_name("schema.sql")
         return schema_path.read_text(encoding="utf-8")
@@ -678,6 +770,36 @@ class GraphRepository:
                 metadata = EXCLUDED.metadata
         """
 
+    def _document_skeleton_upsert_sql(self) -> str:
+        if self.engine.dialect.name == "sqlite":
+            return """
+                INSERT INTO document_skeletons (repo_id, title, skeleton_json, updated_at)
+                VALUES (:repo_id, :title, :skeleton_json, :updated_at)
+                ON CONFLICT (repo_id) DO UPDATE SET
+                    title = EXCLUDED.title,
+                    skeleton_json = EXCLUDED.skeleton_json,
+                    updated_at = EXCLUDED.updated_at
+            """
+        return """
+            INSERT INTO document_skeletons (repo_id, title, skeleton_json, updated_at)
+            VALUES (:repo_id, :title, CAST(:skeleton_json AS JSONB), :updated_at)
+            ON CONFLICT (repo_id) DO UPDATE SET
+                title = EXCLUDED.title,
+                skeleton_json = EXCLUDED.skeleton_json,
+                updated_at = EXCLUDED.updated_at
+        """
+
+    def _document_result_insert_sql(self) -> str:
+        if self.engine.dialect.name == "sqlite":
+            return """
+                INSERT INTO document_results (document_id, repo_id, title, document_json, generated_at)
+                VALUES (:document_id, :repo_id, :title, :document_json, :generated_at)
+            """
+        return """
+            INSERT INTO document_results (document_id, repo_id, title, document_json, generated_at)
+            VALUES (:document_id, :repo_id, :title, CAST(:document_json AS JSONB), :generated_at)
+        """
+
     def _ensure_summary_columns(self, connection) -> None:
         for table_name in ("modules", "files", "symbols", "relations"):
             columns = self._list_columns(connection, table_name)
@@ -690,6 +812,18 @@ class GraphRepository:
             connection.execute(
                 text("ALTER TABLE files ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''")
             )
+
+    def _now_for_database(self) -> str | datetime:
+        now = datetime.now(UTC)
+        if self.engine.dialect.name == "sqlite":
+            return now.isoformat()
+        return now
+
+    @staticmethod
+    def _json_text(value: object) -> str:
+        if isinstance(value, str):
+            return value
+        return json.dumps(value)
 
     def _list_columns(self, connection, table_name: str) -> set[str]:
         if self.engine.dialect.name == "sqlite":

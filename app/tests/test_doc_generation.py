@@ -6,12 +6,15 @@ import unittest
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 
 from app.main import app
 from app.models.doc_models import DocumentResult, DocumentSkeleton, SectionContent, SectionPlan
 from app.models.graph_objects import File, Module, Relation, Symbol
 from app.services.agents.doc_agent import DocAgent, SkeletonPlanner
 from app.services.retrieval.doc_retriever import DocRetriever
+from app.storage.repositories import GraphRepository
 
 
 class _DocRepoStub:
@@ -254,22 +257,40 @@ class DocRetrieverTests(unittest.TestCase):
 
 
 class DocApiTests(unittest.TestCase):
+    def _repository(self) -> GraphRepository:
+        engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        return GraphRepository(database_url="sqlite://", engine=engine)
+
     def test_document_endpoints_return_expected_payloads(self) -> None:
-        with patch("app.api.doc.DocAgent", return_value=_DocAgentStub()):
+        repository = self._repository()
+        with (
+            patch("app.api.doc.DocAgent", return_value=_DocAgentStub()),
+            patch("app.api.doc.get_graph_repository", return_value=repository),
+        ):
             client = TestClient(app)
 
             plan_response = client.post("/doc/plan", json={"repo_id": "repo_test"})
             generate_response = client.post("/doc/generate", json={"repo_id": "repo_test"})
             sections_response = client.get("/doc/repo_test/sections")
+            latest_response = client.get("/doc/repo_test/latest")
 
         self.assertEqual(plan_response.status_code, 200)
         self.assertEqual(plan_response.json()["title"], "sample_repo Design Document")
 
         self.assertEqual(generate_response.status_code, 200)
         self.assertEqual(generate_response.json()["metadata"]["section_count"], 1)
+        self.assertIn("document_id", generate_response.json()["metadata"])
 
         self.assertEqual(sections_response.status_code, 200)
         self.assertEqual(sections_response.json()[0]["section_id"], "overview")
+
+        self.assertEqual(latest_response.status_code, 200)
+        self.assertEqual(latest_response.json()["repo_id"], "repo_test")
+        self.assertEqual(latest_response.json()["sections"][0]["section_id"], "overview")
 
     def test_doc_agent_generates_markdown_sections(self) -> None:
         agent = DocAgent(
