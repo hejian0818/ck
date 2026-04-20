@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
+
+from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 
 from app.models.anchor import Anchor
 from app.models.doc_models import DocumentResult, DocumentSkeleton, SectionContent, SectionPlan
-from app.models.qa_models import QAResponse
+from app.models.qa_models import QAResponse, RepoBuildRequest
 from app.services.agents.metrics import Metrics
 from app.services.workflows.doc_graph import DocWorkflow
 from app.services.workflows.qa_graph import QAWorkflow
+from app.services.workflows.repo_index_graph import RepoIndexWorkflow
+from app.storage.repositories import GraphRepository
 
 
 class _QAAgentStub:
@@ -117,6 +123,23 @@ class LangGraphWorkflowTests(unittest.TestCase):
 
         self.assertEqual(response.answer, "repo:question:session")
         self.assertEqual(agent.calls, 1)
+
+    def test_repo_index_workflow_builds_and_persists_through_langgraph(self) -> None:
+        engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        repository = GraphRepository(database_url="sqlite://", engine=engine)
+
+        with patch("app.services.workflows.repo_index_graph.settings.LANGGRAPH_ENABLED", True):
+            response = RepoIndexWorkflow(repository).build(
+                RepoBuildRequest(repo_path=str(Path("data/test_repo").resolve()), branch="main")
+            )
+
+        self.assertEqual(response.status, "success")
+        self.assertTrue(repository.list_modules(response.build_id))
+        self.assertGreaterEqual(response.parsed_files, 1)
 
 
 if __name__ == "__main__":

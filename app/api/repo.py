@@ -6,7 +6,6 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from app.api.dependencies import get_graph_repository, require_api_key, require_rate_limit
 from app.api.errors import error_detail, handle_api_error, validate_repo_path
-from app.core.config import settings
 from app.models.qa_models import (
     RepoBuildRequest,
     RepoBuildResponse,
@@ -15,11 +14,8 @@ from app.models.qa_models import (
     RepoBuildTaskSubmitResponse,
     SummaryResponse,
 )
-from app.services.cleanarch.graph_builder import GraphBuilder
-from app.services.indexing.embedding_builder import EmbeddingBuilder
 from app.services.indexing.task_manager import index_task_manager
-from app.services.locks.distributed_lock import redis_lock
-from app.storage.vector_store import VectorStore
+from app.services.workflows.repo_index_graph import RepoIndexWorkflow
 
 router = APIRouter(prefix="/repo", tags=["repo"])
 
@@ -35,51 +31,7 @@ def build_index(request: RepoBuildRequest) -> RepoBuildResponse:
 
 
 def _build_and_persist(request: RepoBuildRequest) -> RepoBuildResponse:
-    repo_path = validate_repo_path(request.repo_path)
-    with redis_lock(f"repo-index:{repo_path}") as acquired:
-        if not acquired:
-            raise HTTPException(
-                status_code=409,
-                detail=error_detail("repo_index_in_progress", "Repository indexing is already running"),
-            )
-        return _build_and_persist_locked(request, repo_path)
-
-
-def _build_and_persist_locked(request: RepoBuildRequest, repo_path: str) -> RepoBuildResponse:
-    repository = get_graph_repository()
-    repository.initialize_schema()
-    graph_builder = GraphBuilder()
-    if repository.engine.dialect.name == "postgresql" and settings.ENABLE_VECTOR_INDEXING:
-        repository.init_vector_tables()
-        graph_builder = GraphBuilder(
-            embedding_builder=EmbeddingBuilder(),
-            vector_store=VectorStore(settings.DATABASE_URL),
-        )
-
-    previous_graph = None
-    if request.incremental:
-        previous_repo_id = repository.find_repo_id_by_path(repo_path)
-        if previous_repo_id is not None:
-            previous_graph = repository.load_graphcode(previous_repo_id)
-
-    file_paths = None
-    deleted_paths = None
-    if request.changed_only:
-        file_paths, deleted_paths = graph_builder.scanner.inspect_changes(repo_path, base_ref=request.base_ref)
-
-    graph = graph_builder.build_graph(
-        repo_path=repo_path,
-        branch=request.branch,
-        previous_graph=previous_graph,
-        file_paths=file_paths,
-        deleted_paths=deleted_paths,
-    )
-    repository.save_graphcode(graph)
-    return RepoBuildResponse(
-        build_id=graph.repo_meta.repo_id,
-        status="success",
-        **graph_builder.last_build_stats,
-    )
+    return RepoIndexWorkflow(get_graph_repository()).build(request)
 
 
 @router.post("/scan", response_model=RepoBuildResponse, dependencies=[Depends(require_rate_limit), Depends(require_api_key)])

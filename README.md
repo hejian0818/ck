@@ -9,7 +9,7 @@
 - **增量索引** — 基于文件哈希复用未变化文件，支持 Git changed-only 扫描、删除文件清理
 - **向量语义检索** — pgvector 嵌入索引，sentence-transformers 或 OpenAI 编码；SQLite demo/test 环境支持 Python 侧向量搜索
 - **交互式代码问答** — 锚点定位 → 上下文检索 → 多策略路由 → LLM 生成
-- **LangGraph Agent 工作流** — QA / Doc 流程通过 LangGraph 编排，可选 PostgreSQL checkpoint
+- **LangGraph 工作流** — Repo Index / QA / Doc 核心流程通过 LangGraph 编排，可选 PostgreSQL checkpoint
 - **自动设计文档生成** — LangGraph 编排骨架规划 → 段落生成 → PlantUML 图表 → 一致性审查
 - **高级降级模式** — 部分回答、多候选、引导式追问；低置信度标注、段落级降级
 - **可观测性** — 结构化 JSON 日志、指标采集（/metrics API）、请求链路追踪
@@ -225,7 +225,7 @@ curl http://localhost:8000/repo/tasks/8ddfb0c842c449f5aa3de8f1e6c3e0ac
 └─────────────────────┘
     ↓
 Memory 系统: Anchor Memory / Retrieval Memory / Focus Memory / Task Memory
-LangGraph: QA / Doc workflow 编排，可选 PostgreSQL checkpoint 持久化
+LangGraph: Repo Index / QA / Doc workflow 编排，可选 PostgreSQL checkpoint 持久化
 Redis: 会话 Memory / 后台任务状态 / 分布式索引锁 / 固定窗口限流
 ```
 
@@ -234,7 +234,7 @@ Redis: 会话 Memory / 后台任务状态 / 分布式索引锁 / 固定窗口限
 | 类型 | 存储 | 生命周期 | 用途 |
 |------|------|----------|------|
 | 代码图谱、向量、文档结果 | PostgreSQL + pgvector | 长期持久化 | 服务重启或长时间后再次打开仍可检索 |
-| LangGraph checkpoint | PostgreSQL | 长期持久化 | 恢复 QA / Doc workflow 的线程状态 |
+| LangGraph checkpoint | PostgreSQL | 长期持久化 | 恢复 Repo Index / QA / Doc workflow 的线程状态 |
 | 会话 Memory、文档任务进度、后台索引任务 | Redis | 默认 7 天 TTL | 多实例部署下共享对话焦点、断点进度和任务查询状态 |
 | 请求限流、索引互斥锁 | Redis | TTL 短期状态 | 多实例部署下防止重复索引和接口突刺 |
 | 进程内 LRU 缓存 | Python 内存 | 当前进程 | 嵌入和图查询热点加速，重启后自动重建 |
@@ -255,7 +255,7 @@ Redis: 会话 Memory / 后台任务状态 / 分布式索引锁 / 固定窗口限
 | `LLM_MODEL` | `qwen2.5-coder:7b` | LLM 模型 |
 | `LLM_MAX_RETRIES` | `3` | LLM 最大重试次数 |
 | `LLM_TIMEOUT` | `30` | LLM 调用超时（秒） |
-| `LANGGRAPH_ENABLED` | `True` | 是否启用 LangGraph QA / Doc workflow 编排 |
+| `LANGGRAPH_ENABLED` | `True` | 是否启用 LangGraph Repo Index / QA / Doc workflow 编排 |
 | `LANGGRAPH_CHECKPOINT_ENABLED` | `False` | 是否启用 LangGraph PostgreSQL checkpoint |
 | `LANGGRAPH_CHECKPOINT_URL` | `None` | LangGraph checkpoint 数据库连接，不填时复用 `DATABASE_URL` |
 | `REDIS_ENABLED` | `False` | 是否启用 Redis 分布式能力 |
@@ -302,7 +302,7 @@ uv run alembic upgrade head
 当前主分支验证状态：
 
 ```text
-198 passed, 1 skipped
+199 passed, 1 skipped
 ```
 
 ### 项目结构

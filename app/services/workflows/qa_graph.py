@@ -18,6 +18,7 @@ class QAWorkflowState(TypedDict, total=False):
     selection: CodeSelection | None
     session_id: str
     response: QAResponse
+    final_response: QAResponse
 
 
 class QAWorkflow:
@@ -52,16 +53,28 @@ class QAWorkflow:
             },
             config={"configurable": {"thread_id": f"qa:{repo_id}:{session_id}"}},
         )
-        return final_state["response"]
+        return final_state["final_response"]
 
     def _compile_graph(self):
         from langgraph.graph import END, START, StateGraph
 
         workflow = StateGraph(QAWorkflowState)
+        workflow.add_node("prepare_context", self._prepare_context_node)
         workflow.add_node("answer", self._answer_node)
-        workflow.add_edge(START, "answer")
-        workflow.add_edge("answer", END)
+        workflow.add_node("finalize", self._finalize_node)
+        workflow.add_edge(START, "prepare_context")
+        workflow.add_edge("prepare_context", "answer")
+        workflow.add_edge("answer", "finalize")
+        workflow.add_edge("finalize", END)
         return workflow.compile(checkpointer=get_langgraph_checkpointer())
+
+    def _prepare_context_node(self, state: QAWorkflowState) -> QAWorkflowState:
+        return {
+            "repo_id": state["repo_id"],
+            "question": state["question"],
+            "selection": state.get("selection"),
+            "session_id": state["session_id"],
+        }
 
     def _answer_node(self, state: QAWorkflowState) -> QAWorkflowState:
         response = self.agent.answer(
@@ -71,3 +84,7 @@ class QAWorkflow:
             session_id=state["session_id"],
         )
         return {"response": response}
+
+    @staticmethod
+    def _finalize_node(state: QAWorkflowState) -> QAWorkflowState:
+        return {"final_response": state["response"]}
